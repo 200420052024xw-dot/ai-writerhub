@@ -1,0 +1,3 @@
+display_name: Context Handoff
+short_description: Compress project context for future sessions.
+default_prompt: Create a compact handoff file that a future Codex session can read to continue this work.

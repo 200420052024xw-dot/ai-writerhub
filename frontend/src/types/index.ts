@@ -1,0 +1,3 @@
+export type NavigationKey = "editor" | "translate" | "format" | "documents" | "export" | "settings";
+
+export type HealthState = "checking" | "online" | "offline";
