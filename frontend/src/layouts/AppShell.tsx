@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ClipboardList, Download, FileQuestion, FileText, Languages, Menu, Search, Settings, Upload } from "lucide-react";
+import { ChevronDown, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Search, Settings, Upload } from "lucide-react";
 import { EditorPage } from "../pages/EditorPage";
 import { TranslatePage } from "../pages/TranslatePage";
 import { FormatPage } from "../pages/FormatPage";
 import { DocumentsPage } from "../pages/DocumentsPage";
+import { HomePage } from "../pages/HomePage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { loadModelSettings } from "../services/modelSettings";
+import type { StoredDocumentDetail } from "../services/api";
 import type { HealthState, NavigationKey } from "../types";
 
 type AppShellProps = {
@@ -13,6 +15,7 @@ type AppShellProps = {
 };
 
 const navItems = [
+  { key: "home", label: "首页", icon: Home },
   { key: "editor", label: "编辑", icon: FileText },
   { key: "translate", label: "翻译", icon: Languages },
   { key: "format", label: "格式整理", icon: ClipboardList },
@@ -22,6 +25,7 @@ const navItems = [
 ] satisfies Array<{ key: NavigationKey; label: string; icon: typeof FileText }>;
 
 const pageTitles: Record<NavigationKey, string> = {
+  home: "文档首页",
   editor: "无标题文档",
   translate: "产品需求文档 PRD 示例",
   format: "产品需求文档 PRD 示例",
@@ -31,9 +35,18 @@ const pageTitles: Record<NavigationKey, string> = {
 };
 
 export function AppShell({ healthState }: AppShellProps) {
-  const [activePage, setActivePage] = useState<NavigationKey>("editor");
+  const [activePage, setActivePage] = useState<NavigationKey>("home");
   const [modelSettings, setModelSettings] = useState(() => loadModelSettings());
   const [editorTitle, setEditorTitle] = useState("");
+  const [currentDocument, setCurrentDocument] = useState<StoredDocumentDetail | null>(() => {
+    const raw = window.localStorage.getItem("writerhub.currentDocument");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw) as StoredDocumentDetail;
+    } catch {
+      return null;
+    }
+  });
 
   const modelConfigured = Boolean(
     modelSettings.apiKey.trim() && modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim(),
@@ -44,9 +57,34 @@ export function AppShell({ healthState }: AppShellProps) {
   const currentPageTitle = activePage === "editor" ? editorTitle || "无标题文档" : pageTitles[activePage];
 
   const pageContent = useMemo(() => {
-    if (activePage === "editor") return <EditorPage onTitleChange={setEditorTitle} />;
-    if (activePage === "translate") return <TranslatePage />;
-    if (activePage === "format") return <FormatPage />;
+    const openDocument = (document: StoredDocumentDetail, page: NavigationKey = "editor") => {
+      setCurrentDocument(document);
+      setEditorTitle(document.title);
+      window.localStorage.setItem("writerhub.currentDocument", JSON.stringify(document));
+      setActivePage(page);
+    };
+
+    if (activePage === "home") {
+      return (
+        <HomePage
+          onFormatDocument={(document) => openDocument(document, "format")}
+          onOpenDocument={(document) => openDocument(document, "editor")}
+          onTranslateDocument={(document) => openDocument(document, "translate")}
+        />
+      );
+    }
+    if (activePage === "editor") {
+      return (
+        <EditorPage
+          documentContent={currentDocument?.content}
+          documentId={currentDocument?.id}
+          documentTitle={currentDocument?.title}
+          onTitleChange={setEditorTitle}
+        />
+      );
+    }
+    if (activePage === "translate") return <TranslatePage sourceDocument={currentDocument} />;
+    if (activePage === "format") return <FormatPage sourceDocument={currentDocument} />;
     if (activePage === "documents") return <DocumentsPage />;
     if (activePage === "settings") return <SettingsPage />;
 
@@ -56,7 +94,7 @@ export function AppShell({ healthState }: AppShellProps) {
         <p>该页面将在后续阶段完善。</p>
       </section>
     );
-  }, [activePage]);
+  }, [activePage, currentDocument]);
 
   useEffect(() => {
     const refreshModelSettings = () => setModelSettings(loadModelSettings());
@@ -112,7 +150,7 @@ export function AppShell({ healthState }: AppShellProps) {
             </button>
             <div className="doc-title">
               <strong className={activePage === "editor" && !editorTitle ? "title-untitled" : ""}>{currentPageTitle}</strong>
-              <span className="saved-state">已保存 10:24</span>
+              {activePage !== "home" && <span className="saved-state">已保存 10:24</span>}
             </div>
           </div>
 
@@ -127,22 +165,20 @@ export function AppShell({ healthState }: AppShellProps) {
               <span className="health-dot" />
               {modelStatusText}
             </div>
-            <button className="export-button" type="button">
-              <Download size={18} />
-              导出
-            </button>
           </div>
         </header>
 
         {pageContent}
 
-        <footer className="statusbar">
-          <span>字数 24,515</span>
-          <span>字符 312</span>
-          <span>预计阅读 1 分钟</span>
-          <span>Markdown</span>
-          <span className="status-dot" />
-        </footer>
+        {activePage !== "home" && (
+          <footer className="statusbar">
+            <span>字数 24,515</span>
+            <span>字符 312</span>
+            <span>预计阅读 1 分钟</span>
+            <span>Markdown</span>
+            <span className="status-dot" />
+          </footer>
+        )}
       </main>
     </div>
   );

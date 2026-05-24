@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
-import { CheckCircle2, Eye, EyeOff, KeyRound, Save, ServerCog } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, Eye, EyeOff, KeyRound, PlugZap, Save, ServerCog } from "lucide-react";
+import { testFormatModel } from "../services/api";
 import {
   loadModelSettings,
   MODEL_PROVIDER_PRESETS,
@@ -12,11 +13,8 @@ export function SettingsPage() {
   const [settings, setSettings] = useState<ModelSettings>(() => loadModelSettings());
   const [showKey, setShowKey] = useState(false);
   const [saved, setSaved] = useState(false);
-
-  const activePreset = useMemo(
-    () => MODEL_PROVIDER_PRESETS.find((preset) => preset.id === settings.providerId) ?? MODEL_PROVIDER_PRESETS[0],
-    [settings.providerId],
-  );
+  const [testing, setTesting] = useState(false);
+  const [testState, setTestState] = useState<"idle" | "ok" | "failed">("idle");
 
   const selectProvider = (providerId: ModelProviderId) => {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
@@ -42,6 +40,29 @@ export function SettingsPage() {
     saveModelSettings(settings);
     setSaved(true);
     window.setTimeout(() => setSaved(false), 1800);
+  };
+
+  const testConnection = async () => {
+    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+      setTestState("failed");
+      return;
+    }
+
+    setTesting(true);
+    setTestState("idle");
+    try {
+      await testFormatModel({
+        api_key: settings.apiKey,
+        base_url: settings.baseUrl,
+        model: settings.defaultModel,
+      });
+      setTestState("ok");
+    } catch {
+      setTestState("failed");
+    } finally {
+      setTesting(false);
+      window.setTimeout(() => setTestState("idle"), 2600);
+    }
   };
 
   return (
@@ -118,11 +139,14 @@ export function SettingsPage() {
           </div>
 
           <div className="settings-actions">
-            <button className="primary-action" onClick={save} type="button">
+            <button className={`settings-test-action ${testState}`} disabled={testing} onClick={() => void testConnection()} type="button">
+              <PlugZap size={18} />
+              {testing ? "测试中..." : testState === "ok" ? "连接正常" : testState === "failed" ? "连接失败" : "测试连通性"}
+            </button>
+            <button className="settings-save-action" onClick={save} type="button">
               <Save size={18} />
               保存配置
             </button>
-            <span>当前选择：{activePreset.name}</span>
           </div>
         </article>
 

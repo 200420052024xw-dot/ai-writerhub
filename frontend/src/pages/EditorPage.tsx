@@ -912,10 +912,13 @@ async function streamAssistantReply({
 }
 
 type EditorPageProps = {
+  documentContent?: string;
+  documentId?: string;
+  documentTitle?: string;
   onTitleChange?: (title: string) => void;
 };
 
-export function EditorPage({ onTitleChange }: EditorPageProps) {
+export function EditorPage({ documentContent, documentId, documentTitle: externalDocumentTitle, onTitleChange }: EditorPageProps) {
   const [documentTitle, setDocumentTitle] = useState("");
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [bodyEmpty, setBodyEmpty] = useState(true);
@@ -971,6 +974,15 @@ export function EditorPage({ onTitleChange }: EditorPageProps) {
       },
     },
   });
+
+  useEffect(() => {
+    if (!editor || !documentId) return;
+    const nextTitle = externalDocumentTitle || "";
+    setDocumentTitle(nextTitle);
+    onTitleChange?.(nextTitle);
+    editor.commands.setContent(markdownToHtml(documentContent || ""));
+    setBodyEmpty(!(documentContent || "").trim());
+  }, [documentId, documentContent, externalDocumentTitle, editor, onTitleChange]);
 
   const writeToClipboard = async (type: "markdown" | "plain") => {
     if (!editor) return;
