@@ -89,4 +89,5 @@ export function loadModelSettings(): ModelSettings {
 
 export function saveModelSettings(settings: ModelSettings) {
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  window.dispatchEvent(new Event("writerhub:model-settings-saved"));
 }

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import config, health, markdown, translation
+from app.routers import assistant, config, health, markdown, translation
 
 
 def create_app() -> FastAPI:
@@ -26,6 +26,7 @@ def create_app() -> FastAPI:
     app.include_router(config.router, prefix="/api", tags=["config"])
     app.include_router(markdown.router, prefix="/api", tags=["markdown"])
     app.include_router(translation.router, prefix="/api", tags=["translation"])
+    app.include_router(assistant.router, prefix="/api", tags=["assistant"])
 
     return app
 
