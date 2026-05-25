@@ -1,4 +1,4 @@
-export type ModelProviderId = "openai" | "deepseek" | "qwen" | "zhipu" | "volcengine" | "moonshot" | "custom";
+export type ModelProviderId = "openai" | "deepseek" | "qwen" | "zhipu" | "volcengine" | "moonshot" | "xiaomi" | "minimax" | "custom";
 
 export type ModelProviderPreset = {
   id: ModelProviderId;
@@ -20,7 +20,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     id: "openai",
     name: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4.1-mini",
+    defaultModel: "gpt-5.5",
     note: "OpenAI 官方接口",
   },
   {
@@ -28,35 +28,42 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
     defaultModel: "deepseek-chat",
-    note: "DeepSeek OpenAI-compatible 接口",
+    note: "DeepSeek 官方接口",
   },
   {
     id: "qwen",
-    name: "通义千问 DashScope",
+    name: "通义千问",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     defaultModel: "qwen-plus",
-    note: "阿里云 DashScope 兼容 OpenAI 模式",
+    note: "阿里云官方接口",
   },
   {
     id: "zhipu",
     name: "智谱 GLM",
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
-    defaultModel: "glm-4-plus",
-    note: "智谱开放平台 OpenAI-compatible 接口",
+    defaultModel: "glm-5.1",
+    note: "智谱官方接口",
   },
   {
     id: "volcengine",
     name: "火山方舟",
     baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
-    defaultModel: "doubao-seed-1-6",
-    note: "火山方舟 OpenAI-compatible 接口",
+    defaultModel: "doubao-seed-2-0-pro-260215",
+    note: "火山方舟官方接口",
   },
   {
-    id: "moonshot",
-    name: "Moonshot AI",
-    baseUrl: "https://api.moonshot.cn/v1",
-    defaultModel: "moonshot-v1-8k",
-    note: "Moonshot OpenAI-compatible 接口",
+    id: "xiaomi",
+    name: "Xiaomi MiMo",
+    baseUrl: "https://api.xiaomimimo.com/v1",
+    defaultModel: "mimo-v2.5-pro",
+    note: "Xiaomi MiMo官方接口",
+  },
+  {
+    id: "minimax",
+    name: "MiniMax",
+    baseUrl: "https://api.minimaxi.com/v1",
+    defaultModel: "MiniMax-M2.7",
+    note: "MiniMax官方接口",
   },
   {
     id: "custom",

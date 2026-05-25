@@ -340,6 +340,81 @@ export async function indexStoredDocument(documentId: string): Promise<StoredDoc
   return response.json();
 }
 
+export type RagRuntimeConfig = {
+  embedding_source: "local" | "api";
+  local_model_path: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+  recall_strategy: "vector" | "hybrid";
+  enable_rerank: boolean;
+  rerank_model_path: string;
+};
+
+export type RagSearchResult = {
+  chunk_id: string;
+  document_id: string;
+  document_title: string;
+  chunk_index: number;
+  content: string;
+  score: number;
+  source: string;
+};
+
+export type RagStreamEvent =
+  | { type: "retrieval"; results: RagSearchResult[] }
+  | { type: "chunk"; content: string }
+  | { type: "complete" };
+
+export async function indexStoredDocumentWithRag(documentId: string, ragConfig: RagRuntimeConfig): Promise<StoredDocumentDetail> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/index`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rag_config: ragConfig }),
+  });
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+  return response.json();
+}
+
+export async function queryRagStream(
+  payload: {
+    question: string;
+    document_ids: string[];
+    rag_config: RagRuntimeConfig;
+    chat_config: AIModelConfig;
+  },
+  onEvent: (event: RagStreamEvent) => void,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/rag/query/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await response.text());
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+    for (const part of parts) {
+      const line = part.split("\n").find((item) => item.startsWith("data:"));
+      if (!line) continue;
+      const data = line.slice(5).trim();
+      if (!data) continue;
+      onEvent(JSON.parse(data) as RagStreamEvent);
+    }
+  }
+}
+
 export async function deleteStoredDocument(documentId: string): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}`, {
     method: "DELETE",

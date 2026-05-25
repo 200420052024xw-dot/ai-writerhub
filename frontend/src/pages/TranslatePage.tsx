@@ -15,12 +15,6 @@ import {
 } from "../services/api";
 import { loadModelSettings } from "../services/modelSettings";
 
-const initialSource = `# 1. 项目背景
-文枢 AI WriterHub 是一款面向开发者与内容创作者的智能文本编辑器，集成 AI 能力，提升写作、编辑与协作效率。
-
-# 2. 核心功能
-Markdown 实时编辑与预览。AI 智能写作辅助与改写。多语言翻译与润色。格式整理与一键美化。`;
-
 const styleOptions: Array<[TranslationStyle, string]> = [
   ["default", "默认"],
   ["academic", "学术风格"],
@@ -65,7 +59,7 @@ type TranslationResult = {
 };
 
 function renderSourceText(document?: { title?: string; content: string } | null) {
-  if (!document) return initialSource;
+  if (!document) return "";
   const title = document.title?.trim() || "";
   const content = document.content
     .replace(/\r\n/g, "\n")
@@ -79,7 +73,7 @@ function renderSourceText(document?: { title?: string; content: string } | null)
 }
 
 export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: string; title?: string; content: string } | null }) {
-  const [sourceText, setSourceText] = useState(initialSource);
+  const [sourceText, setSourceText] = useState(() => renderSourceText(sourceDocument));
   const [direction, setDirection] = useState<TranslationDirection>("zh-en");
   const [displayMode, setDisplayMode] = useState<TranslationDisplayMode>("split");
   const [options, setOptions] = useState<TranslationOptions>(defaultOptions);
@@ -94,7 +88,6 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   const [enableCustomRequirements, setEnableCustomRequirements] = useState(false);
 
   useEffect(() => {
-    if (!sourceDocument?.id) return;
     setSourceText(renderSourceText(sourceDocument));
     setResult(null);
   }, [sourceDocument?.id, sourceDocument?.title, sourceDocument?.content]);

@@ -10,6 +10,17 @@ class Settings(BaseSettings):
     ai_base_url: str = Field(default="https://api.deepseek.com", alias="AI_BASE_URL")
     ai_default_model: str = Field(default="deepseek-chat", alias="AI_DEFAULT_MODEL")
     ai_timeout_seconds: int = Field(default=60, alias="AI_TIMEOUT_SECONDS")
+    rag_embedding_source: str = Field(default="local", alias="RAG_EMBEDDING_SOURCE")
+    rag_local_model_path: str = Field(default=r"F:\hf_cache\model", alias="RAG_LOCAL_MODEL_PATH")
+    rag_api_key: str = Field(default="", alias="RAG_API_KEY")
+    rag_base_url: str = Field(default="", alias="RAG_BASE_URL")
+    rag_model: str = Field(default="", alias="RAG_MODEL")
+    rag_recall_strategy: str = Field(default="hybrid", alias="RAG_RECALL_STRATEGY")
+    rag_enable_rerank: bool = Field(default=False, alias="RAG_ENABLE_RERANK")
+    rag_rerank_model_path: str = Field(
+      default=r"F:\hf_cache\models--Qwen--Qwen3-Reranker-0.6B\snapshots\e61197ed45024b0ed8a2d74b80b4d909f1255473",
+      alias="RAG_RERANK_MODEL_PATH",
+    )
 
     model_config = SettingsConfigDict(
       env_file=".env",

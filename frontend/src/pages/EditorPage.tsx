@@ -632,6 +632,10 @@ function htmlToMarkdown(html: string): string {
   return nodeToMarkdown(container);
 }
 
+function stripStoredHtmlArtifacts(markdown: string) {
+  return markdown.replace(/<span\b[^>]*>([\s\S]*?)<\/span>/gi, "$1");
+}
+
 function isEditorBodyEmpty(editor: Editor) {
   const doc = editor.state.doc;
   if (doc.childCount !== 1) return false;
@@ -666,7 +670,7 @@ function renderInlineMarkdown(value: string) {
 }
 
 function markdownToHtml(markdown: string) {
-  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  const lines = stripStoredHtmlArtifacts(markdown).replace(/\r\n/g, "\n").split("\n");
   const html: string[] = [];
   let listType: "ul" | "ol" | null = null;
   let inCode = false;
@@ -794,19 +798,6 @@ function inlineToMarkdown(node: ChildNode): string {
   if (tag === "s" || tag === "del") return `~~${inner}~~`;
   if (tag === "a") return `[${inner}](${node.getAttribute("href") || ""})`;
   if (tag === "br") return "\n";
-  if (tag === "span") {
-    const style = node.getAttribute("style") || "";
-    const styles: string[] = [];
-    if (style.includes("color:")) {
-      const color = style.match(/color:\s*([^;]+)/)?.[1]?.trim();
-      if (color) styles.push(`color: ${color}`);
-    }
-    if (style.includes("font-size:")) {
-      const size = style.match(/font-size:\s*([^;]+)/)?.[1]?.trim();
-      if (size) styles.push(`font-size: ${size}`);
-    }
-    if (styles.length) return `<span style="${styles.join("; ")}">${inner}</span>`;
-  }
   return inner;
 }
 
@@ -1009,7 +1000,19 @@ export function EditorPage({
   });
 
   useEffect(() => {
-    if (!editor || !documentId) return;
+    if (!editor) return;
+    if (!documentId) {
+      loadedDocumentIdRef.current = null;
+      loadingDocumentRef.current = true;
+      setDocumentTitle("");
+      onTitleChange?.("");
+      editor.commands.setContent(initialContent);
+      setBodyEmpty(true);
+      window.setTimeout(() => {
+        loadingDocumentRef.current = false;
+      }, 0);
+      return;
+    }
     if (loadedDocumentIdRef.current === documentId) return;
     loadedDocumentIdRef.current = documentId;
     loadingDocumentRef.current = true;

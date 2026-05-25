@@ -95,6 +95,9 @@ def get_document(document_id: str) -> DocumentDetail:
 def delete_document(document_id: str) -> None:
     ensure_storage()
     get_document(document_id)
+    from app.services.rag_service import delete_document_index
+
+    delete_document_index(document_id)
     with connect() as conn:
         conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
         conn.commit()
@@ -132,7 +135,10 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
     next_status = current.rag_status
 
     if next_hash != current.content_hash:
-        next_status = "outdated" if current.rag_status in {"indexed", "outdated", "failed", "not_indexed"} else current.rag_status
+        if current.rag_status == "not_indexed":
+            next_status = "not_indexed"
+        elif current.rag_status in {"indexed", "outdated", "failed"}:
+            next_status = "outdated"
 
     timestamp = now_utc().isoformat()
     with connect() as conn:

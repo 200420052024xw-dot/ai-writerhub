@@ -93,7 +93,7 @@ function contentToBlocks(content: string): FormatDocumentBlock[] {
       blocks.push({ type: "paragraph", text: trimmed });
     }
   }
-  return blocks.length ? blocks : sampleDocument.blocks;
+  return blocks;
 }
 
 function parseFontSizePx(value: string) {
@@ -136,9 +136,12 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
   const [appliedConfig, setAppliedConfig] = useState<FormatConfig>(defaultFormatConfig);
   const [message, setMessage] = useState("");
   const exportRef = useRef<HTMLDivElement>(null);
-  const activeDocument = sourceDocument?.content.trim()
-    ? { title: sourceDocument.title || "无标题文档", blocks: contentToBlocks(sourceDocument.content) }
-    : sampleDocument;
+  const activeDocument = sourceDocument
+    ? {
+        title: sourceDocument.title?.trim() || "无标题文档",
+        blocks: contentToBlocks(sourceDocument.content),
+      }
+    : { title: "未选择文件", blocks: [] };
 
   const updateConfig = (key: keyof FormatConfig, value: string) => {
     setConfig((current) => ({ ...current, [key]: value }));

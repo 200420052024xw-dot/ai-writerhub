@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { CheckCircle2, Eye, EyeOff, KeyRound, PlugZap, Save, ServerCog } from "lucide-react";
+import { CheckCircle2, ChevronDown, Database, Eye, EyeOff, KeyRound, PlugZap, Save, ServerCog } from "lucide-react";
 import { testFormatModel } from "../services/api";
+import { loadRagSettings, saveRagSettings, type RagSettings } from "../services/ragSettings";
 import {
   loadModelSettings,
   MODEL_PROVIDER_PRESETS,
@@ -11,21 +12,21 @@ import {
 
 export function SettingsPage() {
   const [settings, setSettings] = useState<ModelSettings>(() => loadModelSettings());
+  const [ragSettings, setRagSettings] = useState<RagSettings>(() => loadRagSettings());
   const [showKey, setShowKey] = useState(false);
-  const [saved, setSaved] = useState(false);
+  const [aiSaved, setAiSaved] = useState(false);
+  const [ragSaved, setRagSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testState, setTestState] = useState<"idle" | "ok" | "failed">("idle");
+  const [ragTesting, setRagTesting] = useState(false);
+  const [ragTestState, setRagTestState] = useState<"idle" | "ok" | "failed">("idle");
+  const [aiOpen, setAiOpen] = useState(true);
+  const [ragOpen, setRagOpen] = useState(true);
 
   const selectProvider = (providerId: ModelProviderId) => {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
     if (!preset) return;
-
-    setSettings((current) => ({
-      ...current,
-      providerId,
-      baseUrl: preset.baseUrl,
-      defaultModel: preset.defaultModel,
-    }));
+    setSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, defaultModel: preset.defaultModel }));
   };
 
   const updateField = (field: keyof ModelSettings, value: string) => {
@@ -36,10 +37,20 @@ export function SettingsPage() {
     }));
   };
 
-  const save = () => {
+  const updateRagField = <K extends keyof RagSettings>(field: K, value: RagSettings[K]) => {
+    setRagSettings((current) => ({ ...current, [field]: value }));
+  };
+
+  const saveAi = () => {
     saveModelSettings(settings);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 1800);
+    setAiSaved(true);
+    window.setTimeout(() => setAiSaved(false), 1800);
+  };
+
+  const saveRag = () => {
+    saveRagSettings(ragSettings);
+    setRagSaved(true);
+    window.setTimeout(() => setRagSaved(false), 1800);
   };
 
   const testConnection = async () => {
@@ -47,15 +58,10 @@ export function SettingsPage() {
       setTestState("failed");
       return;
     }
-
     setTesting(true);
     setTestState("idle");
     try {
-      await testFormatModel({
-        api_key: settings.apiKey,
-        base_url: settings.baseUrl,
-        model: settings.defaultModel,
-      });
+      await testFormatModel({ api_key: settings.apiKey, base_url: settings.baseUrl, model: settings.defaultModel });
       setTestState("ok");
     } catch {
       setTestState("failed");
@@ -65,102 +71,201 @@ export function SettingsPage() {
     }
   };
 
+  const testRagConnection = async () => {
+    if (!ragSettings.apiKey.trim() || !ragSettings.baseUrl.trim() || !ragSettings.model.trim()) {
+      setRagTestState("failed");
+      return;
+    }
+    setRagTesting(true);
+    setRagTestState("idle");
+    try {
+      await testFormatModel({ api_key: ragSettings.apiKey, base_url: ragSettings.baseUrl, model: ragSettings.model });
+      setRagTestState("ok");
+    } catch {
+      setRagTestState("failed");
+    } finally {
+      setRagTesting(false);
+      window.setTimeout(() => setRagTestState("idle"), 2600);
+    }
+  };
+
   return (
     <section className="page settings-page">
       <div className="settings-layout">
         <article className="panel settings-main">
-          <div className="settings-heading">
-            <div>
-              <span>AI 模型配置</span>
-              <h2>配置默认模型、API Key 和接口地址</h2>
-            </div>
-            {saved && (
-              <div className="save-state">
-                <CheckCircle2 size={18} />
-                已保存
+          <section className={`settings-collapse ${aiOpen ? "open" : ""}`}>
+            <button className="settings-collapse-head" onClick={() => setAiOpen((open) => !open)} type="button">
+              <div>
+                <span>大模型设置</span>
+                <h2>默认聊天模型、API Key 和接口地址</h2>
               </div>
+              <ChevronDown size={18} />
+            </button>
+
+            {aiOpen && (
+              <>
+                <div className="provider-grid">
+                  {MODEL_PROVIDER_PRESETS.map((preset) => (
+                    <button
+                      className={`provider-card ${settings.providerId === preset.id ? "active" : ""}`}
+                      key={preset.id}
+                      onClick={() => selectProvider(preset.id)}
+                      type="button"
+                    >
+                      <strong>{preset.name}</strong>
+                      <span>{preset.note}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="settings-form">
+                  <label>
+                    <span><KeyRound size={17} />API Key</span>
+                    <div className="secret-input">
+                      <input
+                        autoComplete="off"
+                        onChange={(event) => updateField("apiKey", event.target.value)}
+                        placeholder="sk-..."
+                        type={showKey ? "text" : "password"}
+                        value={settings.apiKey}
+                      />
+                      <button onClick={() => setShowKey((value) => !value)} type="button" aria-label="切换密钥显示">
+                        {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
+                      </button>
+                    </div>
+                  </label>
+                  <label>
+                    <span><ServerCog size={17} />Base URL</span>
+                    <input onChange={(event) => updateField("baseUrl", event.target.value)} value={settings.baseUrl} />
+                  </label>
+                  <label>
+                    <span>默认模型</span>
+                    <input onChange={(event) => updateField("defaultModel", event.target.value)} value={settings.defaultModel} />
+                  </label>
+                </div>
+
+                <div className="settings-actions">
+                  {aiSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}
+                  <button className={`settings-test-action ${testState}`} disabled={testing} onClick={() => void testConnection()} type="button">
+                    <PlugZap size={18} />
+                    {testing ? "测试中..." : testState === "ok" ? "连接正常" : testState === "failed" ? "连接失败" : "测试连通性"}
+                  </button>
+                  <button className="settings-save-action" onClick={saveAi} type="button">
+                    <Save size={18} />
+                    保存大模型设置
+                  </button>
+                </div>
+              </>
             )}
-          </div>
+          </section>
 
-          <div className="provider-grid">
-            {MODEL_PROVIDER_PRESETS.map((preset) => (
-              <button
-                className={`provider-card ${settings.providerId === preset.id ? "active" : ""}`}
-                key={preset.id}
-                onClick={() => selectProvider(preset.id)}
-                type="button"
-              >
-                <strong>{preset.name}</strong>
-                <span>{preset.note}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="settings-form">
-            <label>
-              <span>
-                <KeyRound size={17} />
-                API Key
-              </span>
-              <div className="secret-input">
-                <input
-                  autoComplete="off"
-                  onChange={(event) => updateField("apiKey", event.target.value)}
-                  placeholder="sk-..."
-                  type={showKey ? "text" : "password"}
-                  value={settings.apiKey}
-                />
-                <button onClick={() => setShowKey((value) => !value)} type="button" aria-label="切换密钥显示">
-                  {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
-                </button>
+          <section className={`settings-collapse rag-settings-section ${ragOpen ? "open" : ""}`}>
+            <button className="settings-collapse-head" onClick={() => setRagOpen((open) => !open)} type="button">
+              <div>
+                <span>RAG 设置</span>
+                <h2>向量化、召回策略和重排</h2>
               </div>
-            </label>
-
-            <label>
-              <span>
-                <ServerCog size={17} />
-                Base URL
-              </span>
-              <input
-                onChange={(event) => updateField("baseUrl", event.target.value)}
-                placeholder="https://api.example.com/v1"
-                value={settings.baseUrl}
-              />
-            </label>
-
-            <label>
-              <span>默认模型</span>
-              <input
-                onChange={(event) => updateField("defaultModel", event.target.value)}
-                placeholder="例如 deepseek-chat / qwen-plus / glm-4-plus"
-                value={settings.defaultModel}
-              />
-            </label>
-          </div>
-
-          <div className="settings-actions">
-            <button className={`settings-test-action ${testState}`} disabled={testing} onClick={() => void testConnection()} type="button">
-              <PlugZap size={18} />
-              {testing ? "测试中..." : testState === "ok" ? "连接正常" : testState === "failed" ? "连接失败" : "测试连通性"}
+              <ChevronDown size={18} />
             </button>
-            <button className="settings-save-action" onClick={save} type="button">
-              <Save size={18} />
-              保存配置
-            </button>
-          </div>
+
+            {ragOpen && (
+              <>
+                <div className="rag-mode-row">
+                  <button className={ragSettings.embeddingSource === "local" ? "active" : ""} onClick={() => updateRagField("embeddingSource", "local")} type="button">
+                    <Database size={16} />
+                    默认模型
+                  </button>
+                  <button className={ragSettings.embeddingSource === "api" ? "active" : ""} onClick={() => updateRagField("embeddingSource", "api")} type="button">
+                    <ServerCog size={16} />
+                    API 模型
+                  </button>
+                </div>
+
+                {ragSettings.embeddingSource === "api" && (
+                  <div className="settings-form">
+                    <label>
+                      <span>Embedding API Key</span>
+                      <input onChange={(event) => updateRagField("apiKey", event.target.value)} placeholder="sk-..." type="password" value={ragSettings.apiKey} />
+                    </label>
+                    <label>
+                      <span>Embedding Base URL</span>
+                      <input onChange={(event) => updateRagField("baseUrl", event.target.value)} placeholder="https://api.example.com/v1" value={ragSettings.baseUrl} />
+                    </label>
+                    <label>
+                      <span>Embedding 模型名</span>
+                      <input onChange={(event) => updateRagField("model", event.target.value)} placeholder="text-embedding-..." value={ragSettings.model} />
+                    </label>
+                  </div>
+                )}
+
+                <div className="rag-recall-options">
+                  <span>召回策略</span>
+                  <div>
+                    <button
+                      className={ragSettings.recallStrategy === "vector" ? "active" : ""}
+                      onClick={() => updateRagField("recallStrategy", "vector")}
+                      type="button"
+                    >
+                      默认召回
+                    </button>
+                    <button
+                      className={ragSettings.recallStrategy === "hybrid" ? "active" : ""}
+                      onClick={() => updateRagField("recallStrategy", "hybrid")}
+                      type="button"
+                    >
+                      BM25 + Vector 混合召回
+                    </button>
+                  </div>
+                </div>
+
+                <label className="rag-switch-row">
+                  <span>启用重排 Rerank</span>
+                  <button
+                    className={`switch-control ${ragSettings.enableRerank ? "on" : ""}`}
+                    onClick={() => updateRagField("enableRerank", !ragSettings.enableRerank)}
+                    type="button"
+                    aria-pressed={ragSettings.enableRerank}
+                  >
+                    <span />
+                  </button>
+                </label>
+
+                <div className="settings-actions">
+                  {ragSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}
+                  {ragSettings.embeddingSource === "api" && (
+                    <button className={`settings-test-action ${ragTestState}`} disabled={ragTesting} onClick={() => void testRagConnection()} type="button">
+                      <PlugZap size={18} />
+                      {ragTesting ? "测试中..." : ragTestState === "ok" ? "连接正常" : ragTestState === "failed" ? "连接失败" : "测试连通性"}
+                    </button>
+                  )}
+                  <button className="settings-save-action" onClick={saveRag} type="button">
+                    <Save size={18} />
+                    保存 RAG 设置
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
         </article>
 
         <aside className="panel settings-side">
-          <h2>配置说明</h2>
-          <p>API Key 当前只保存在浏览器本地存储中，用于前端配置预留；后续接真实 AI 时，建议由 FastAPI 后端统一读取、加密保存或通过环境变量管理。</p>
-          <div className="settings-note">
-            <strong>建议</strong>
-            <p>生产环境不要让前端直接调用模型厂商接口，避免 API Key 暴露。前端只提交任务，后端负责调用模型。</p>
-          </div>
-          <div className="settings-note">
-            <strong>兼容接口</strong>
-            <p>预设厂商按 OpenAI-compatible Chat Completions 形态规划，后续 AI 服务层可复用同一套 Base URL、API Key、Model 配置。</p>
-          </div>
+          <section className="settings-collapse open">
+            <button className="settings-collapse-head" type="button">
+              <div>
+                <span>配置说明</span>
+                <h2>模型与 RAG 运行说明</h2>
+              </div>
+            </button>
+            <p>大模型设置用于聊天、翻译、格式解析等生成任务；RAG 设置只影响知识库索引与检索。</p>
+            <div className="settings-note">
+              <strong>默认模型</strong>
+              <p>RAG 默认向量模型使用本地缓存，不需要填写路径或 API Key。</p>
+            </div>
+            <div className="settings-note">
+              <strong>API 模型</strong>
+              <p>选择 API 模型时，需要填写 Embedding API Key、Base URL 和模型名。</p>
+            </div>
+          </section>
         </aside>
       </div>
     </section>

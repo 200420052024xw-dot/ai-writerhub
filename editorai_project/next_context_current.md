@@ -2,7 +2,7 @@
 
 ## Resume Prompt
 
-请先阅读 `F:\text_editor\editorai_project\next_context_current.md`，然后继续开发文枢 AI WriterHub。重点检查当前 Tiptap 编辑器、文枢助手、标题/文件名同步、Markdown 粘贴转换、模型配置状态和右侧助手流式对话是否符合产品要求。
+请先阅读 `F:\text_editor\editorai_project\next_context_current.md`，然后继续开发文枢 AI WriterHub。重点检查当前首页文档工作台、知识库问答页面、编辑器功能、翻译功能是否符合产品要求。
 
 ## Latest Session Notes / Must Read First
 
@@ -26,16 +26,17 @@
 - `backend/app/routers/documents.py`
 - `backend/app/services/document_service.py`
 
-当前首页定位为“文档工作台”：
+当前首页定位为”文档工作台”：
 
 - 顶部按钮：`新建文档`、`上传文档`、刷新。
-- 标题文案应显示 `首页`，不是 `文档首页`。
+- 标题文案显示 `文枢AI WriterHub`。
 - 文档列表列：`标题 / 解析状态 / 修改时间 / 操作`。
-- `解析状态` 要偏左，接近上方统计卡 `全部文档` 下方；`修改时间` 不要乱动，靠近 `最近上传` 的“上传”字下方；`操作` 表头应在第一个操作按钮 `翻译` 上方。
+- `解析状态` 列宽 260px，`修改时间` 列宽 160px，操作列自适应。
 - 行操作顺序：`翻译`、`格式整理`、`导出`、三个点菜单。
-- `导出` 是行内按钮，不恢复独立“导出中心”。点击后弹出：`导出 MD`、`导出 Word`、`导出 PDF`。
-- 三个点菜单里有 `解析` 和 `删除`；`解析` 要有图标。
-- 如果文档 `rag_status === "outdated"`，UI 显示 `待更新`。
+- `导出` 是行内按钮，不恢复独立”导出中心”。点击后弹出：`导出 Word`、`导出 PDF`、`导出 MD`（Word 在最前）。
+- 三个点菜单里有 `解析` 和 `删除`；`解析` 要有图标；图标与文字间距 `gap: 8px`。
+- 点击页面空白区域可关闭三个点菜单和导出菜单（stopPropagation 机制）。
+- 如果文档 `rag_status === “outdated”`，UI 显示 `待更新`。
 - 标题下不要显示后端原始状态字符串。
 
 上传弹窗：
@@ -147,7 +148,7 @@ Start-Process -FilePath python -ArgumentList '-m','uvicorn','app.main:app','--ho
 
 - Remote: `https://github.com/200420052024xw-dot/writerhub-ai.git`
 - Branch: `main`
-- Latest pushed commit: `292e24b Upgrade editor workspace and assistant`
+- Latest pushed commit: `ff38a2e Update knowledge base page, homepage branding and UI improvements`
 - Current `git status --short`: uncommitted changes at the time this handoff was written.
 
 ## Stack
@@ -351,6 +352,25 @@ Main files:
 - 长文本策略：文本 >= 700 字符或段落 >= 4 时启用，先生成上下文概要，再分块翻译。
 - 短文本：直接整体翻译。
 - 温度参数：0.2（低温度，翻译更稳定）。
+
+## 知识库页面
+
+主要文件：
+
+- `frontend/src/pages/DocumentsPage.tsx`
+- `frontend/src/styles/global.css`
+
+当前知识库页面定位为"文档问答"：
+
+- 布局为左右两栏：左侧 Q&A 对话区，右侧信息面板。
+- 右侧面板分两部分：上方`历史对话`记录，下方`检索结果 Top 5`。
+- 文档库通过"选择文档"按钮以下拉方式展示，默认隐藏。
+- 下拉列表顶部有提示文字：`解析后的文档才会参与问答，待更新文档需重新解析`。
+- 文档列表使用自定义蓝色圆角复选框，带文件类型彩色图标。
+- 已解析文档显示绿色"已解析"标识，待更新显示黄色时钟图标。
+- 删除了引用片段区域。
+- 对话框顶部有"选择文档"按钮（含文档计数）、"仅当前选中文档"复选框、"保存对话"按钮。
+- AI 回复气泡带头像（紫色 AI / 蓝色 Q），圆角更大，用户消息右对齐。
 
 ## App Shell / Branding
 

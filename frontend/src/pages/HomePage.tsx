@@ -205,17 +205,17 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   const deleteDocument = async (documentId: string) => {
     try {
       await deleteStoredDocument(documentId);
-      const raw = window.localStorage.getItem("writerhub.currentDocument");
-      if (raw) {
+      ["writerhub.editorDocument", "writerhub.translateDocument", "writerhub.formatDocument", "writerhub.currentDocument"].forEach((key) => {
+        const raw = window.localStorage.getItem(key);
+        if (!raw) return;
         try {
           const current = JSON.parse(raw) as StoredDocumentDetail;
-          if (current.id === documentId) {
-            window.localStorage.removeItem("writerhub.currentDocument");
-          }
+          if (current.id === documentId) window.localStorage.removeItem(key);
         } catch {
           // Ignore invalid local cache.
         }
-      }
+      });
+      window.dispatchEvent(new CustomEvent("writerhub:document-deleted", { detail: { documentId } }));
       setMenuDocumentId(null);
       await refresh();
       showMessage("文档已删除");
@@ -342,7 +342,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
       <div className="home-workspace panel" onClick={() => { setMenuDocumentId(null); setExportDocumentId(null); }}>
         <div className="home-header">
           <div>
-            <h2>文枢AI WriterHub</h2>
+            <img alt="文枢 AI WriterHub" className="home-brand-image" src="/logo-calligraphy.png" />
           </div>
           <div className="home-actions">
             <button onClick={createDocument} type="button">

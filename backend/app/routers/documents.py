@@ -1,6 +1,7 @@
 from fastapi import APIRouter, File, Form, UploadFile
 
 from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentListResponse, DocumentUpdateRequest
+from app.schemas.rag import RagIndexRequest
 from app.services.document_service import (
     complete_document_index,
     content_hash,
@@ -13,6 +14,7 @@ from app.services.document_service import (
     upload_and_parse_document,
 )
 from app.services.llm_client import RuntimeModelConfig
+from app.services.rag_service import index_document_chunks
 
 
 router = APIRouter()
@@ -45,8 +47,9 @@ async def remove_document(document_id: str) -> dict[str, bool]:
 
 
 @router.post("/documents/{document_id}/index", response_model=DocumentDetail)
-async def index_document(document_id: str) -> DocumentDetail:
+async def index_document(document_id: str, payload: RagIndexRequest | None = None) -> DocumentDetail:
     document = mark_document_indexing(document_id)
+    await index_document_chunks(document, payload.rag_config if payload else None)
     return complete_document_index(document_id, content_hash(document.content))
 
 
