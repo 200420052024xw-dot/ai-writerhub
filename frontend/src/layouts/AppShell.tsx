@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Search, Settings, Upload } from "lucide-react";
+import { ChevronLeft, ChevronRight, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Search, Settings } from "lucide-react";
 import { EditorPage } from "../pages/EditorPage";
 import { TranslatePage } from "../pages/TranslatePage";
 import { FormatPage } from "../pages/FormatPage";
@@ -18,26 +18,29 @@ const navItems = [
   { key: "home", label: "首页", icon: Home },
   { key: "editor", label: "编辑", icon: FileText },
   { key: "translate", label: "翻译", icon: Languages },
+  { key: "documents", label: "知识库", icon: FileQuestion },
   { key: "format", label: "格式整理", icon: ClipboardList },
-  { key: "documents", label: "文档问答", icon: FileQuestion },
-  { key: "export", label: "导出中心", icon: Upload },
-  { key: "settings", label: "设置", icon: Settings },
 ] satisfies Array<{ key: NavigationKey; label: string; icon: typeof FileText }>;
 
 const pageTitles: Record<NavigationKey, string> = {
-  home: "文档首页",
+  home: "首页",
   editor: "无标题文档",
   translate: "产品需求文档 PRD 示例",
   format: "产品需求文档 PRD 示例",
-  documents: "多文档 AI 问答",
+  documents: "知识库",
   export: "导出中心",
   settings: "模型与系统设置",
 };
 
 export function AppShell({ healthState }: AppShellProps) {
   const [activePage, setActivePage] = useState<NavigationKey>("home");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelSettings, setModelSettings] = useState(() => loadModelSettings());
   const [editorTitle, setEditorTitle] = useState("");
+  const [saveState, setSaveState] = useState<{ label: string; status: "idle" | "saving" | "saved" | "failed" }>({
+    label: "已保存 10:24",
+    status: "saved",
+  });
   const [currentDocument, setCurrentDocument] = useState<StoredDocumentDetail | null>(() => {
     const raw = window.localStorage.getItem("writerhub.currentDocument");
     if (!raw) return null;
@@ -59,7 +62,7 @@ export function AppShell({ healthState }: AppShellProps) {
   const pageContent = useMemo(() => {
     const openDocument = (document: StoredDocumentDetail, page: NavigationKey = "editor") => {
       setCurrentDocument(document);
-      setEditorTitle(document.title);
+      setEditorTitle(document.title.trim());
       window.localStorage.setItem("writerhub.currentDocument", JSON.stringify(document));
       setActivePage(page);
     };
@@ -80,6 +83,20 @@ export function AppShell({ healthState }: AppShellProps) {
           documentId={currentDocument?.id}
           documentTitle={currentDocument?.title}
           onTitleChange={setEditorTitle}
+          onSaveStateChange={setSaveState}
+          onDocumentSaved={(document) => {
+            setCurrentDocument((current) => {
+              if (!current || current.id !== document.id) return current;
+              const next = {
+                ...current,
+                title: document.title,
+                content: document.content,
+                last_saved_at: document.last_saved_at,
+              };
+              window.localStorage.setItem("writerhub.currentDocument", JSON.stringify(next));
+              return next;
+            });
+          }}
         />
       );
     }
@@ -113,7 +130,7 @@ export function AppShell({ healthState }: AppShellProps) {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}>
         <div className="brand">
           <img alt="文枢 AI WriterHub" className="brand-logo" src="/logo-brand.png" />
         </div>
@@ -128,6 +145,7 @@ export function AppShell({ healthState }: AppShellProps) {
                 className={`nav-item ${isActive ? "active" : ""}`}
                 key={item.key}
                 onClick={() => openPage(item.key)}
+                title={sidebarCollapsed ? item.label : undefined}
                 type="button"
               >
                 <Icon size={20} />
@@ -137,20 +155,42 @@ export function AppShell({ healthState }: AppShellProps) {
           })}
         </nav>
 
-        <button className="sidebar-collapse" type="button" aria-label="收起侧边栏">
-          <ChevronDown size={18} />
+        <button
+          className={`sidebar-settings ${activePage === "settings" ? "active" : ""}`}
+          onClick={() => openPage("settings")}
+          title={sidebarCollapsed ? "设置" : undefined}
+          type="button"
+        >
+          <Settings size={20} />
+          <span>设置</span>
+        </button>
+
+        <button
+          className="sidebar-collapse"
+          onClick={() => setSidebarCollapsed((current) => !current)}
+          type="button"
+          aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+          title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+        >
+          {sidebarCollapsed ? <ChevronRight size={18} /> : <ChevronLeft size={18} />}
         </button>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
           <div className="topbar-left">
-            <button className="icon-button" type="button" aria-label="菜单">
+            <button
+              className="icon-button"
+              onClick={() => setSidebarCollapsed((current) => !current)}
+              type="button"
+              aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+              title={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            >
               <Menu size={20} />
             </button>
             <div className="doc-title">
               <strong className={activePage === "editor" && !editorTitle ? "title-untitled" : ""}>{currentPageTitle}</strong>
-              {activePage !== "home" && <span className="saved-state">已保存 10:24</span>}
+              {activePage !== "home" && <span className={`saved-state ${saveState.status}`}>{saveState.label}</span>}
             </div>
           </div>
 
@@ -170,7 +210,7 @@ export function AppShell({ healthState }: AppShellProps) {
 
         {pageContent}
 
-        {activePage !== "home" && (
+        {activePage === "editor" && (
           <footer className="statusbar">
             <span>字数 24,515</span>
             <span>字符 312</span>

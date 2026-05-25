@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   Clock3,
+  Download,
   FileText,
   Folder,
   Info,
@@ -10,11 +11,13 @@ import {
   MoreHorizontal,
   Plus,
   RefreshCw,
+  ScanSearch,
   Trash2,
   Upload,
 } from "lucide-react";
 import {
   createStoredDocument,
+  deleteStoredDocument,
   getStoredDocument,
   listStoredDocuments,
   uploadStoredDocument,
@@ -29,69 +32,22 @@ type HomePageProps = {
   onTranslateDocument: (document: StoredDocumentDetail) => void;
 };
 
-const mockNow = new Date("2026-05-24T10:24:00+08:00").toISOString();
-const mockDocuments: StoredDocumentDetail[] = [
-  {
-    id: "mock-prd",
-    title: "产品需求文档 PRD 示例",
-    filename: "产品需求文档 PRD 示例.docx",
-    file_type: "docx",
-    uploaded_at: mockNow,
-    updated_at: mockNow,
-    parse_method: "vision",
-    content: "# 产品需求文档 PRD 示例\n\n## 1. 项目背景\n文枢 AI WriterHub 是一款面向内容创作者和知识工作者的智能文档编辑器。\n\n## 2. 核心功能\n- AI 辅助写作\n- 多语言翻译\n- 文档格式整理\n- 多文档问答",
-  },
-  {
-    id: "mock-report",
-    title: "AI 产品方案汇报",
-    filename: "AI 产品方案汇报.pdf",
-    file_type: "pdf",
-    uploaded_at: "2026-05-20T08:47:00+08:00",
-    updated_at: "2026-05-20T08:47:00+08:00",
-    parse_method: "manual",
-    content: "# AI 产品方案汇报\n\n本文档用于汇报产品定位、目标用户、核心场景和后续迭代计划。\n\n## 关键结论\n- 优先完善文档编辑体验\n- 强化上传解析和文档工作台\n- 为后续 RAG 检索建立统一文档入口",
-  },
-  {
-    id: "mock-course",
-    title: "智能文本编辑器课程设计说明书",
-    filename: "智能文本编辑器课程设计说明书.md",
-    file_type: "md",
-    uploaded_at: "2026-05-19T22:11:00+08:00",
-    updated_at: "2026-05-19T22:11:00+08:00",
-    parse_method: "vision",
-    content: "# 智能文本编辑器课程设计说明书\n\n## 系统目标\n构建一个支持写作、翻译、格式整理和文档管理的一体化编辑系统。\n\n## 模块设计\n- 前端工作台\n- Tiptap 编辑器\n- FastAPI 后端\n- 模型配置与调用",
-  },
-  {
-    id: "mock-translation",
-    title: "长文翻译实践记录",
-    filename: "长文翻译实践记录.pptx",
-    file_type: "pptx",
-    uploaded_at: "2026-05-18T15:36:00+08:00",
-    updated_at: "2026-05-18T15:36:00+08:00",
-    parse_method: "manual",
-    content: "# 长文翻译实践记录\n\n本记录总结了长文本翻译过程中的术语统一、上下文保持和分段显示策略。\n\n## 观察\n长文本需要先建立上下文摘要，再逐块翻译，最后合并输出。",
-  },
-];
+type ParsedStatus = "parsed" | "pending" | "updated" | "indexing" | "failed";
 
-function mockSummary(document: StoredDocumentDetail): StoredDocumentSummary {
-  const { content: _content, ...summary } = document;
-  return summary;
+function parseStatus(document: StoredDocumentSummary): ParsedStatus {
+  if (document.rag_status === "indexed") return "parsed";
+  if (document.rag_status === "indexing") return "indexing";
+  if (document.rag_status === "failed") return "failed";
+  if (document.rag_status === "outdated") return "updated";
+  return "pending";
 }
 
-function parseStatus(document: StoredDocumentSummary): "parsed" | "pending" {
-  return document.parse_method === "vision" ? "parsed" : "pending";
-}
-
-function statusLabel(status: "parsed" | "pending") {
-  return status === "parsed" ? "已解析" : "待解析";
-}
-
-function fileTypeClass(fileType: string) {
-  if (fileType.includes("pdf")) return "pdf";
-  if (fileType.includes("ppt")) return "ppt";
-  if (fileType.includes("doc")) return "word";
-  if (fileType.includes("md") || fileType.includes("txt")) return "text";
-  return "text";
+function statusLabel(status: ParsedStatus) {
+  if (status === "parsed") return "已解析";
+  if (status === "updated") return "待更新";
+  if (status === "indexing") return "解析中";
+  if (status === "failed") return "解析失败";
+  return "待解析";
 }
 
 function formatTime(value: string) {
@@ -105,18 +61,50 @@ function formatTime(value: string) {
   });
 }
 
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function safeFileName(value: string) {
+  return (value.trim() || "无标题文档").replace(/[\\/:*?"<>|]/g, "_");
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function downloadBlob(content: BlobPart, filename: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument }: HomePageProps) {
   const [documents, setDocuments] = useState<StoredDocumentSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [menuDocumentId, setMenuDocumentId] = useState<string | null>(null);
+  const [exportDocumentId, setExportDocumentId] = useState<string | null>(null);
   const [showParseModal, setShowParseModal] = useState(false);
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [dragActive, setDragActive] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recentDocument = documents[0];
   const parsedCount = documents.filter((document) => parseStatus(document) === "parsed").length;
-  const pendingCount = documents.length - parsedCount;
+  const pendingCount = documents.filter((document) => parseStatus(document) === "pending").length;
   const recentUploadCount = documents.filter((document) => {
-    const uploadedAt = new Date(document.uploaded_at).getTime();
+    const uploadedAt = new Date(document.last_saved_at).getTime();
     return !Number.isNaN(uploadedAt) && Date.now() - uploadedAt < 1000 * 60 * 60 * 24 * 7;
   }).length;
 
@@ -129,10 +117,9 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     setLoading(true);
     try {
       const response = await listStoredDocuments();
-      setDocuments(response.documents.length > 0 ? response.documents : mockDocuments.map(mockSummary));
+      setDocuments(response.documents);
     } catch {
-      setDocuments(mockDocuments.map(mockSummary));
-      showMessage("已显示模拟文档");
+      showMessage("文档列表加载失败");
     } finally {
       setLoading(false);
     }
@@ -144,18 +131,45 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
 
   const createDocument = async () => {
     try {
-      const document = await createStoredDocument({ title: "无标题文档", content: "" });
+      const document = await createStoredDocument({ title: "", content: "" });
       await refresh();
-      onOpenDocument(document);
+      onOpenDocument({ ...document, title: "" });
     } catch {
       showMessage("新建文档失败");
     }
   };
 
-  const uploadDocument = async (file: File) => {
-    const suffix = file.name.split(".").pop()?.toLowerCase() || "";
-    if (["xls", "xlsx"].includes(suffix)) {
+  const chooseUploadFiles = (files?: FileList | File[] | null) => {
+    const nextFiles = Array.from(files || []);
+    if (nextFiles.length === 0) return;
+
+    const supportedFiles = nextFiles.filter((file) => {
+      const suffix = file.name.split(".").pop()?.toLowerCase() || "";
+      return !["xls", "xlsx"].includes(suffix);
+    });
+    if (supportedFiles.length !== nextFiles.length) {
       showMessage("暂不支持上传 Excel 文件");
+    }
+
+    setSelectedFiles((current) => {
+      const existing = new Set(current.map((file) => `${file.name}-${file.size}-${file.lastModified}`));
+      const merged = [...current];
+      supportedFiles.forEach((file) => {
+        const key = `${file.name}-${file.size}-${file.lastModified}`;
+        if (!existing.has(key) && merged.length < 5) {
+          merged.push(file);
+          existing.add(key);
+        }
+      });
+      if (current.length + supportedFiles.length > 5) {
+        showMessage("每次最多上传 5 个文件");
+      }
+      return merged;
+    });
+  };
+
+  const uploadDocuments = async () => {
+    if (selectedFiles.length === 0) {
       return;
     }
 
@@ -167,19 +181,78 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
 
     setLoading(true);
     try {
-      const document = await uploadStoredDocument({
-        file,
-        api_key: settings.apiKey,
-        base_url: settings.baseUrl,
-        model: settings.defaultModel,
-      });
+      let lastDocument: StoredDocumentDetail | null = null;
+      for (const file of selectedFiles) {
+        lastDocument = await uploadStoredDocument({
+          file,
+          api_key: settings.apiKey,
+          base_url: settings.baseUrl,
+          model: settings.defaultModel,
+        });
+      }
       await refresh();
-      onOpenDocument(document);
+      if (lastDocument) onOpenDocument(lastDocument);
+      setSelectedFiles([]);
+      setShowUploadModal(false);
     } catch {
       showMessage("上传解析失败，请检查模型或文件转换环境");
     } finally {
       setLoading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const deleteDocument = async (documentId: string) => {
+    try {
+      await deleteStoredDocument(documentId);
+      const raw = window.localStorage.getItem("writerhub.currentDocument");
+      if (raw) {
+        try {
+          const current = JSON.parse(raw) as StoredDocumentDetail;
+          if (current.id === documentId) {
+            window.localStorage.removeItem("writerhub.currentDocument");
+          }
+        } catch {
+          // Ignore invalid local cache.
+        }
+      }
+      setMenuDocumentId(null);
+      await refresh();
+      showMessage("文档已删除");
+    } catch {
+      showMessage("删除文档失败");
+    }
+  };
+
+  const exportDocument = async (documentId: string, type: "md" | "word" | "pdf") => {
+    setExportDocumentId(null);
+    try {
+      const document = await getStoredDocument(documentId);
+      const title = document.title.trim() || "无标题文档";
+      const filename = safeFileName(title);
+      const markdown = `# ${title}\n\n${document.content || ""}`;
+      if (type === "md") {
+        downloadBlob(markdown, `${filename}.md`, "text/markdown;charset=utf-8");
+        return;
+      }
+
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.8;padding:40px;color:#17233c;}h1{font-size:28px;}pre{white-space:pre-wrap;font-family:inherit;}</style></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(document.content || "")}</pre></body></html>`;
+      if (type === "word") {
+        downloadBlob(html, `${filename}.doc`, "application/msword;charset=utf-8");
+        return;
+      }
+
+      const printWindow = window.open("", "_blank");
+      if (!printWindow) {
+        showMessage("浏览器阻止了 PDF 打印窗口");
+        return;
+      }
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.focus();
+      printWindow.print();
+    } catch {
+      showMessage("导出失败，请稍后重试");
     }
   };
 
@@ -196,33 +269,93 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
           </div>
         </div>
       )}
-      <div className="home-workspace panel">
+      {showUploadModal && (
+        <div className="home-modal-backdrop" onMouseDown={() => setShowUploadModal(false)}>
+          <div className="home-upload-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <h3>上传文档</h3>
+            <button
+              className={`home-upload-drop${dragActive ? " active" : ""}`}
+              onClick={() => fileInputRef.current?.click()}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDragActive(true);
+              }}
+              onDragLeave={(event) => {
+                event.preventDefault();
+                setDragActive(false);
+              }}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragActive(false);
+                chooseUploadFiles(event.dataTransfer.files);
+              }}
+              type="button"
+            >
+              <Upload size={30} />
+              <strong>点击或拖拽文件到这里</strong>
+              <span>支持 txt、md、doc、docx、pdf、ppt、pptx，不支持 Excel</span>
+            </button>
+            {selectedFiles.length > 0 && (
+              <div className="home-upload-file-list">
+                {selectedFiles.map((file, index) => (
+                  <div className="home-upload-file" key={`${file.name}-${file.size}-${file.lastModified}`}>
+                    <span className="home-file-badge text">DOC</span>
+                    <div>
+                      <strong>{file.name}</strong>
+                      <em>{formatFileSize(file.size)}</em>
+                    </div>
+                    <button
+                      onClick={() => setSelectedFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))}
+                      type="button"
+                    >
+                      移除
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input
+              accept=".txt,.md,.doc,.docx,.pdf,.ppt,.pptx"
+              hidden
+              multiple
+              onChange={(event) => chooseUploadFiles(event.target.files)}
+              ref={fileInputRef}
+              type="file"
+            />
+            <div className="home-upload-actions">
+              <button disabled type="button" title="普通解析将使用 OCR，后续接入">
+                普通解析
+              </button>
+              <button
+                className="primary-action"
+                disabled={selectedFiles.length === 0 || loading}
+                onClick={() => void uploadDocuments()}
+                type="button"
+              >
+                精细解析
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="home-workspace panel" onClick={() => { setMenuDocumentId(null); setExportDocumentId(null); }}>
         <div className="home-header">
           <div>
-            <h2>文档首页</h2>
+            <h2>文枢AI WriterHub</h2>
           </div>
           <div className="home-actions">
             <button onClick={createDocument} type="button">
               <Plus size={18} />
               新建文档
             </button>
-            <button className="primary-action" onClick={() => fileInputRef.current?.click()} type="button">
+            <button className="primary-action" onClick={() => setShowUploadModal(true)} type="button">
               <Upload size={18} />
               上传文档
             </button>
             <button onClick={() => void refresh()} type="button" aria-label="刷新">
               <RefreshCw size={18} />
             </button>
-            <input
-              accept=".txt,.md,.doc,.docx,.pdf,.ppt,.pptx"
-              hidden
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void uploadDocument(file);
-              }}
-              ref={fileInputRef}
-              type="file"
-            />
           </div>
         </div>
 
@@ -235,7 +368,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
               <span>继续上次编辑</span>
               <strong>{recentDocument?.title || "暂无最近文档"}</strong>
               <p>
-                {recentDocument ? `最近打开：${formatTime(recentDocument.updated_at)}` : "编辑页会自动保留您上次打开的文档内容"}
+                {recentDocument ? `最近打开：${formatTime(recentDocument.last_saved_at)}` : "编辑页会自动保留您上次打开的文档内容"}
               </p>
             </div>
             <button
@@ -293,14 +426,13 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                 onClick={() => void onOpenDocumentClick(document.id, onOpenDocument)}
               >
                 <button className="home-doc-title" onClick={(event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onOpenDocument); }} type="button">
-                  <span className={`home-file-badge ${fileTypeClass(document.file_type)}`}>{document.file_type.toUpperCase().slice(0, 3)}</span>
+                  <span className="home-file-badge text">DOC</span>
                   <span>
                     <strong>{document.title}</strong>
-                    <em>{document.filename} · {document.file_type}</em>
                   </span>
                 </button>
                 <span className={`parse-status ${parseStatus(document)}`}>{statusLabel(parseStatus(document))}</span>
-                <span>{formatTime(document.updated_at)}</span>
+                <span>{formatTime(document.last_saved_at)}</span>
                 <div className="home-doc-actions">
                   <button onClick={(event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onTranslateDocument); }} type="button">
                     <Languages size={15} />
@@ -310,10 +442,31 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                     <LayoutTemplate size={15} />
                     格式整理
                   </button>
+                  <div className="home-export-menu">
+                    <button
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setMenuDocumentId(null);
+                        setExportDocumentId((current) => (current === document.id ? null : document.id));
+                      }}
+                      type="button"
+                    >
+                      <Download size={15} />
+                      导出
+                    </button>
+                    {exportDocumentId === document.id && (
+                      <div className="home-export-popover" onClick={(event) => event.stopPropagation()}>
+                        <button onClick={() => void exportDocument(document.id, "word")} type="button">导出 Word</button>
+                        <button onClick={() => void exportDocument(document.id, "pdf")} type="button">导出 PDF</button>
+                        <button onClick={() => void exportDocument(document.id, "md")} type="button">导出 MD</button>
+                      </div>
+                    )}
+                  </div>
                   <div className="home-more-menu">
                     <button
                       onClick={(event) => {
                         event.stopPropagation();
+                        setExportDocumentId(null);
                         setMenuDocumentId((current) => (current === document.id ? null : document.id));
                       }}
                       type="button"
@@ -331,6 +484,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                             }}
                             type="button"
                           >
+                            <ScanSearch size={14} />
                             解析
                           </button>
                         )}
@@ -338,7 +492,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                           className="danger"
                           onClick={() => {
                             setMenuDocumentId(null);
-                            showMessage("删除功能稍后接入");
+                            void deleteDocument(document.id);
                           }}
                           type="button"
                         >
@@ -362,10 +516,5 @@ async function onOpenDocumentClick(
   documentId: string,
   handler: (document: StoredDocumentDetail) => void,
 ) {
-  const mockDocument = mockDocuments.find((document) => document.id === documentId);
-  if (mockDocument) {
-    handler(mockDocument);
-    return;
-  }
   handler(await getStoredDocument(documentId));
 }

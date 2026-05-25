@@ -4,6 +4,136 @@
 
 请先阅读 `F:\text_editor\editorai_project\next_context_current.md`，然后继续开发文枢 AI WriterHub。重点检查当前 Tiptap 编辑器、文枢助手、标题/文件名同步、Markdown 粘贴转换、模型配置状态和右侧助手流式对话是否符合产品要求。
 
+## Latest Session Notes / Must Read First
+
+当前项目已经从单纯编辑器扩展为“首页文档工作台 + 编辑 + 翻译 + 格式整理 + 知识库”的工作台型产品。后续模型接手时优先看这些最新事实：
+
+- Frontend dev URL: `http://127.0.0.1:5173`。
+- Backend URL: `http://127.0.0.1:8000`。
+- 用户要求每次做完前端/后端改动后重启项目，确保浏览器看到最新版本。
+- 用户强烈关注 UI 细节，不接受“看起来没变”的改动；涉及布局必须确认具体列位置、按钮对齐、可见文字、悬停状态。
+- 中文 UI 文案要自然，避免把后端原始状态如 `outdated` 直接显示给用户。
+- 所有 AI 功能必须走设置页上传/保存的模型 URL、API key、模型名；prompt 要放在 `backend/app/prompts` 下。
+- 文档正文是主数据，数据库保存正文；向量库/RAG 索引只是派生索引。只有 `indexed` 表示索引最新，但用户仍可继续使用其它功能，问答前只提醒用户更新解析。
+
+### Current Home / Document Workbench
+
+主要文件：
+
+- `frontend/src/pages/HomePage.tsx`
+- `frontend/src/styles/global.css`
+- `frontend/src/services/api.ts`
+- `backend/app/routers/documents.py`
+- `backend/app/services/document_service.py`
+
+当前首页定位为“文档工作台”：
+
+- 顶部按钮：`新建文档`、`上传文档`、刷新。
+- 标题文案应显示 `首页`，不是 `文档首页`。
+- 文档列表列：`标题 / 解析状态 / 修改时间 / 操作`。
+- `解析状态` 要偏左，接近上方统计卡 `全部文档` 下方；`修改时间` 不要乱动，靠近 `最近上传` 的“上传”字下方；`操作` 表头应在第一个操作按钮 `翻译` 上方。
+- 行操作顺序：`翻译`、`格式整理`、`导出`、三个点菜单。
+- `导出` 是行内按钮，不恢复独立“导出中心”。点击后弹出：`导出 MD`、`导出 Word`、`导出 PDF`。
+- 三个点菜单里有 `解析` 和 `删除`；`解析` 要有图标。
+- 如果文档 `rag_status === "outdated"`，UI 显示 `待更新`。
+- 标题下不要显示后端原始状态字符串。
+
+上传弹窗：
+
+- 点击 `上传文档` 打开弹窗，支持点击选择和拖拽。
+- 选中的文件要在拖拽区下方形成列表，后续选择/拖拽应追加，不覆盖之前文件。
+- 每次最多 5 个文件，但弹窗文案不写“最多 5 个”，只在超出时提示。
+- Excel 不支持上传。
+- 底部按钮：`普通解析`（当前禁用，后续 OCR）、`精细解析`（当前用视觉模型）。
+- 当前用户最新要求：全部使用视觉模型，不要 OCR；但普通解析按钮作为后续入口保留禁用。
+
+### Current Sidebar / App Shell
+
+主要文件：
+
+- `frontend/src/layouts/AppShell.tsx`
+- `frontend/src/styles/global.css`
+- `frontend/public/logo-brand.png`
+- `frontend/public/logo.png`
+- `frontend/public/logo-icon.png`
+
+当前侧边栏要求：
+
+- 导航顺序：`首页`、`编辑`、`翻译`、`知识库`、`格式整理`。
+- `设置` 不在导航列表中，单独放左下角。
+- 不要恢复独立 `导出中心`。
+- 左侧导航可收缩，收缩后只显示图标。
+- 顶部三横线按钮现在也用于收起/展开左侧导航。
+- 侧栏悬停才显示收缩小把手。
+- 收缩小把手是很窄的长方形，位于靠近首页项的高度，箭头必须在长方形正中间，用户要求还要更向上移动一点。
+- 收起后的品牌图标必须是用户给的单图标，不是带“文枢 AI WriterHub”文字的横向 logo。当前从 `frontend/public/logo.png` 裁出了 `frontend/public/logo-icon.png` 并在 CSS 收起态使用。
+
+### Current Editor Common Bugs / Rules
+
+用户反复测试出的共性问题：
+
+- 标题输入框字号必须大于正文 `标题 1`。
+- 从首页点击文件进入编辑页，如果正文已有内容，不允许显示 `直接输入正文` 占位。
+- 用户输入换行后，也不应继续显示 `直接输入正文`。
+- 空行是合法内容，编辑器不能自动删除空行。
+- 编辑器不能在自动保存、重新加载、Markdown/HTML 往返时平白增加空行或让空行指数级增殖。
+- 当前已做的修复思路：编辑器只在切换 `documentId` 时 `setContent`，不要因自动保存后的父级 `currentDocument.content` 更新反复重载当前正文。
+- `bodyEmpty` 判断不能只用 `editor.getText().trim()`，因为换行/空段落也会被误判为空；要看 ProseMirror 文档结构。
+- 折叠箭头要在编辑区域左侧留白，不应通过缩进标题文字实现。
+- 点击折叠箭头时标题文字不应变色。
+- 标题 1-6 都应支持折叠，正文第一个标题也应支持。
+- 折叠框/折叠控件显示异常时，优先检查 `frontend/src/extensions/StructureFold.ts` 和相关 CSS。
+
+### Translation / Format Integration
+
+- 从首页点击 `翻译` 必须先加载该文档内容到翻译原文区。
+- 翻译原文区应包含文档标题。
+- 翻译页显示应接近编辑器渲染后的纯文本，而不是直接暴露 Markdown 标记。
+- 从首页点击 `格式整理` 必须加载该文档内容到格式整理预览区。
+- 格式整理是独立功能，和编辑器其它功能不要强耦合；文件来源后续再完善。
+
+### Backend Data Model / RAG Status
+
+文档关键字段：
+
+- `id`
+- `title`
+- `content`
+- `content_hash`
+- `rag_status`
+- `last_saved_at`
+- `last_indexed_at`
+
+`rag_status` 状态：
+
+- `not_indexed`
+- `indexed`
+- `outdated`
+- `indexing`
+- `failed`
+
+规则：
+
+- `content_hash` 是当前正文内容哈希。
+- 自动保存只保证正文最新。
+- 正文修改后，索引可以短暂滞后，状态应变成 `outdated`。
+- 用户倾向于每天晚上 12 点或凌晨定时检查更新；若用户在更新前提问，则提示手动更新解析。
+- 问答模块只提醒索引未更新，不阻止用户继续使用系统其它功能。
+
+### Recent Validation / Commands
+
+- 多次运行 `cd F:\text_editor\frontend && npm run build` 通过。
+- Vite 仍有 chunk > 500KB 警告，主要来自 Tiptap，当前可接受。
+- 最近几次重启命令曾被用户中断；若接手时页面未更新，重新启动前后端。
+
+重启命令：
+
+```powershell
+Get-NetTCPConnection -LocalPort 5173,8000 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
+Start-Process -FilePath npm -ArgumentList 'run','dev' -WorkingDirectory 'F:\text_editor\frontend' -WindowStyle Hidden
+Start-Process -FilePath python -ArgumentList '-m','uvicorn','app.main:app','--host','127.0.0.1','--port','8000' -WorkingDirectory 'F:\text_editor\backend' -WindowStyle Hidden
+```
+
 ## Project Paths
 
 - Root: `F:\text_editor`

@@ -1,8 +1,9 @@
 import asyncio
 import base64
-import json
+import hashlib
 import os
 import shutil
+import sqlite3
 import subprocess
 import textwrap
 import uuid
@@ -14,41 +15,158 @@ from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageDraw, ImageFont
 
 from app.prompts.documents import DOCUMENT_VISION_PROMPT
-from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentFileType, DocumentSummary
+from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentSummary, DocumentUpdateRequest
 from app.services.llm_client import RuntimeModelConfig, call_vision_model
 
 
 STORAGE_ROOT = Path(__file__).resolve().parents[1] / "storage" / "documents"
 ORIGINAL_DIR = STORAGE_ROOT / "originals"
-RECORD_DIR = STORAGE_ROOT / "records"
 WORK_DIR = STORAGE_ROOT / "work"
-INDEX_PATH = STORAGE_ROOT / "index.json"
+DB_PATH = STORAGE_ROOT / "documents.sqlite3"
 SUPPORTED_EXTENSIONS = {"txt", "md", "doc", "docx", "pdf", "ppt", "pptx"}
-
-
-def ensure_storage() -> None:
-    ORIGINAL_DIR.mkdir(parents=True, exist_ok=True)
-    RECORD_DIR.mkdir(parents=True, exist_ok=True)
-    WORK_DIR.mkdir(parents=True, exist_ok=True)
-    if not INDEX_PATH.exists():
-        INDEX_PATH.write_text("[]", encoding="utf-8")
 
 
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
-def read_index() -> list[dict]:
-    ensure_storage()
-    try:
-        return json.loads(INDEX_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
+def content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def write_index(items: list[dict]) -> None:
+def ensure_storage() -> None:
+    ORIGINAL_DIR.mkdir(parents=True, exist_ok=True)
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    with connect() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                rag_status TEXT NOT NULL,
+                last_saved_at TEXT NOT NULL,
+                last_indexed_at TEXT
+            )
+            """
+        )
+        conn.commit()
+
+
+def connect() -> sqlite3.Connection:
+    STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def row_to_summary(row: sqlite3.Row) -> DocumentSummary:
+    return DocumentSummary(
+        id=row["id"],
+        title=row["title"],
+        content_hash=row["content_hash"],
+        rag_status=row["rag_status"],
+        last_saved_at=datetime.fromisoformat(row["last_saved_at"]),
+        last_indexed_at=datetime.fromisoformat(row["last_indexed_at"]) if row["last_indexed_at"] else None,
+    )
+
+
+def row_to_detail(row: sqlite3.Row) -> DocumentDetail:
+    return DocumentDetail(**row_to_summary(row).model_dump(), content=row["content"])
+
+
+def list_documents() -> list[DocumentSummary]:
     ensure_storage()
-    INDEX_PATH.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM documents ORDER BY last_saved_at DESC").fetchall()
+    return [row_to_summary(row) for row in rows]
+
+
+def get_document(document_id: str) -> DocumentDetail:
+    ensure_storage()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="document not found")
+    return row_to_detail(row)
+
+
+def delete_document(document_id: str) -> None:
+    ensure_storage()
+    get_document(document_id)
+    with connect() as conn:
+        conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        conn.commit()
+
+    for path in ORIGINAL_DIR.glob(f"{document_id}.*"):
+        path.unlink(missing_ok=True)
+    work_dir = WORK_DIR / document_id
+    if work_dir.exists():
+        shutil.rmtree(work_dir)
+
+
+def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
+    ensure_storage()
+    document_id = uuid.uuid4().hex
+    timestamp = now_utc().isoformat()
+    title = payload.title.strip() or "无标题文档"
+    content = payload.content or ""
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None),
+        )
+        conn.commit()
+    return get_document(document_id)
+
+
+def update_document(document_id: str, payload: DocumentUpdateRequest) -> DocumentDetail:
+    current = get_document(document_id)
+    next_title = payload.title if payload.title is not None else current.title
+    next_content = payload.content if payload.content is not None else current.content
+    next_hash = content_hash(next_content)
+    next_status = current.rag_status
+
+    if next_hash != current.content_hash:
+        next_status = "outdated" if current.rag_status in {"indexed", "outdated", "failed", "not_indexed"} else current.rag_status
+
+    timestamp = now_utc().isoformat()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE documents
+            SET title = ?, content = ?, content_hash = ?, rag_status = ?, last_saved_at = ?
+            WHERE id = ?
+            """,
+            (next_title.strip() or "无标题文档", next_content, next_hash, next_status, timestamp, document_id),
+        )
+        conn.commit()
+    return get_document(document_id)
+
+
+def mark_document_indexing(document_id: str) -> DocumentDetail:
+    get_document(document_id)
+    with connect() as conn:
+        conn.execute("UPDATE documents SET rag_status = ? WHERE id = ?", ("indexing", document_id))
+        conn.commit()
+    return get_document(document_id)
+
+
+def complete_document_index(document_id: str, indexed_hash: str) -> DocumentDetail:
+    current = get_document(document_id)
+    status = "indexed" if indexed_hash == current.content_hash else "outdated"
+    indexed_at = now_utc().isoformat() if status == "indexed" else current.last_indexed_at.isoformat() if current.last_indexed_at else None
+    with connect() as conn:
+        conn.execute(
+            "UPDATE documents SET rag_status = ?, last_indexed_at = ? WHERE id = ?",
+            (status, indexed_at, document_id),
+        )
+        conn.commit()
+    return get_document(document_id)
 
 
 def infer_title(filename: str, content: str = "") -> str:
@@ -57,58 +175,6 @@ def infer_title(filename: str, content: str = "") -> str:
         if stripped.startswith("#"):
             return stripped.lstrip("#").strip() or Path(filename).stem
     return Path(filename).stem or "无标题文档"
-
-
-def summary_from_record(record: dict) -> DocumentSummary:
-    return DocumentSummary(
-        id=record["id"],
-        title=record["title"],
-        filename=record["filename"],
-        file_type=record["file_type"],
-        uploaded_at=datetime.fromisoformat(record["uploaded_at"]),
-        updated_at=datetime.fromisoformat(record["updated_at"]),
-        parse_method=record["parse_method"],
-    )
-
-
-def list_documents() -> list[DocumentSummary]:
-    records = sorted(read_index(), key=lambda item: item["updated_at"], reverse=True)
-    return [summary_from_record(record) for record in records]
-
-
-def get_document(document_id: str) -> DocumentDetail:
-    for record in read_index():
-        if record["id"] == document_id:
-            content_path = RECORD_DIR / f"{document_id}.txt"
-            content = content_path.read_text(encoding="utf-8") if content_path.exists() else ""
-            return DocumentDetail(**summary_from_record(record).model_dump(), content=content)
-    raise HTTPException(status_code=404, detail="document not found")
-
-
-def save_record(record: dict, content: str) -> DocumentDetail:
-    ensure_storage()
-    content_path = RECORD_DIR / f"{record['id']}.txt"
-    content_path.write_text(content, encoding="utf-8")
-    records = [item for item in read_index() if item["id"] != record["id"]]
-    records.append(record)
-    write_index(records)
-    return get_document(record["id"])
-
-
-def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
-    document_id = uuid.uuid4().hex
-    timestamp = now_utc().isoformat()
-    title = payload.title.strip() or "无标题文档"
-    record = {
-        "id": document_id,
-        "title": title,
-        "filename": f"{title}.md",
-        "file_type": "new",
-        "uploaded_at": timestamp,
-        "updated_at": timestamp,
-        "parse_method": "manual",
-    }
-    return save_record(record, payload.content)
 
 
 async def save_upload(file: UploadFile, document_id: str) -> tuple[Path, str]:
@@ -251,18 +317,20 @@ async def recognize_pages(image_urls: list[str], model_config: RuntimeModelConfi
 
 
 async def upload_and_parse_document(file: UploadFile, model_config: RuntimeModelConfig) -> DocumentDetail:
+    ensure_storage()
     document_id = uuid.uuid4().hex
     file_path, file_type = await save_upload(file, document_id)
     image_urls = file_to_image_urls(file_path, file_type, document_id)
     content = await recognize_pages(image_urls, model_config)
+    title = infer_title(file.filename or file_path.name, content)
     timestamp = now_utc().isoformat()
-    record = {
-        "id": document_id,
-        "title": infer_title(file.filename or file_path.name, content),
-        "filename": file.filename or file_path.name,
-        "file_type": file_type,
-        "uploaded_at": timestamp,
-        "updated_at": timestamp,
-        "parse_method": "vision",
-    }
-    return save_record(record, content)
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None),
+        )
+        conn.commit()
+    return get_document(document_id)

@@ -71,7 +71,6 @@ export const StructureFold = Extension.create({
 
             nodes.forEach((entry, index) => {
               if (entry.type !== "heading") return;
-              if (index === 0 && entry.pos === 0) return;
 
               const isFolded = folded.has(entry.pos);
               decorations.push(
@@ -88,7 +87,7 @@ export const StructureFold = Extension.create({
                     button.addEventListener("click", (event) => {
                       event.preventDefault();
                       event.stopPropagation();
-                      view.dispatch(state.tr.setMeta(structureFoldKey, { type: "toggle", pos: entry.pos } satisfies FoldMeta));
+                      view.dispatch(view.state.tr.setMeta(structureFoldKey, { type: "toggle", pos: entry.pos } satisfies FoldMeta));
                     });
                     return button;
                   },

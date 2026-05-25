@@ -1,7 +1,17 @@
 from fastapi import APIRouter, File, Form, UploadFile
 
-from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentListResponse
-from app.services.document_service import create_document, get_document, list_documents, upload_and_parse_document
+from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentListResponse, DocumentUpdateRequest
+from app.services.document_service import (
+    complete_document_index,
+    content_hash,
+    create_document,
+    delete_document,
+    get_document,
+    list_documents,
+    mark_document_indexing,
+    update_document,
+    upload_and_parse_document,
+)
 from app.services.llm_client import RuntimeModelConfig
 
 
@@ -21,6 +31,23 @@ async def document_detail(document_id: str) -> DocumentDetail:
 @router.post("/documents/new", response_model=DocumentDetail)
 async def new_document(payload: DocumentCreateRequest) -> DocumentDetail:
     return create_document(payload)
+
+
+@router.patch("/documents/{document_id}", response_model=DocumentDetail)
+async def save_document(document_id: str, payload: DocumentUpdateRequest) -> DocumentDetail:
+    return update_document(document_id, payload)
+
+
+@router.delete("/documents/{document_id}")
+async def remove_document(document_id: str) -> dict[str, bool]:
+    delete_document(document_id)
+    return {"ok": True}
+
+
+@router.post("/documents/{document_id}/index", response_model=DocumentDetail)
+async def index_document(document_id: str) -> DocumentDetail:
+    document = mark_document_indexing(document_id)
+    return complete_document_index(document_id, content_hash(document.content))
 
 
 @router.post("/documents/upload", response_model=DocumentDetail)

@@ -271,11 +271,10 @@ export async function testFormatModel(payload: {
 export type StoredDocumentSummary = {
   id: string;
   title: string;
-  filename: string;
-  file_type: string;
-  uploaded_at: string;
-  updated_at: string;
-  parse_method: "vision" | "manual";
+  content_hash: string;
+  rag_status: "not_indexed" | "indexed" | "outdated" | "indexing" | "failed";
+  last_saved_at: string;
+  last_indexed_at: string | null;
 };
 
 export type StoredDocumentDetail = StoredDocumentSummary & {
@@ -311,6 +310,43 @@ export async function createStoredDocument(payload: {
     throw new Error("Document create failed");
   }
   return response.json();
+}
+
+export async function saveStoredDocument(
+  documentId: string,
+  payload: {
+    title?: string;
+    content?: string;
+  },
+): Promise<StoredDocumentDetail> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error("Document save failed");
+  }
+  return response.json();
+}
+
+export async function indexStoredDocument(documentId: string): Promise<StoredDocumentDetail> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/index`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error("Document index failed");
+  }
+  return response.json();
+}
+
+export async function deleteStoredDocument(documentId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error("Document delete failed");
+  }
 }
 
 export async function uploadStoredDocument(payload: {

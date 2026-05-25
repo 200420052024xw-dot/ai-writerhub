@@ -64,7 +64,21 @@ type TranslationResult = {
   sentence_pairs: TranslationPair[];
 };
 
-export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: string; content: string } | null }) {
+function renderSourceText(document?: { title?: string; content: string } | null) {
+  if (!document) return initialSource;
+  const title = document.title?.trim() || "";
+  const content = document.content
+    .replace(/\r\n/g, "\n")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "• ")
+    .replace(/^\s*\d+\.\s+/gm, (match) => match.trimEnd() + " ")
+    .replace(/[*_`~]/g, "");
+  if (!title) return content;
+  const firstLine = content.split("\n").find((line) => line.trim())?.trim();
+  return firstLine === title ? content : `${title}\n\n${content}`;
+}
+
+export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: string; title?: string; content: string } | null }) {
   const [sourceText, setSourceText] = useState(initialSource);
   const [direction, setDirection] = useState<TranslationDirection>("zh-en");
   const [displayMode, setDisplayMode] = useState<TranslationDisplayMode>("split");
@@ -81,9 +95,9 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
 
   useEffect(() => {
     if (!sourceDocument?.id) return;
-    setSourceText(sourceDocument.content);
+    setSourceText(renderSourceText(sourceDocument));
     setResult(null);
-  }, [sourceDocument?.id, sourceDocument?.content]);
+  }, [sourceDocument?.id, sourceDocument?.title, sourceDocument?.content]);
 
   useEffect(() => {
     saveGlossaryToStorage(glossary);

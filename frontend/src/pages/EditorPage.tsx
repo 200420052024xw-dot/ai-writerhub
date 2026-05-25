@@ -31,6 +31,7 @@ import {
   Send,
 } from "lucide-react";
 import { API_BASE_URL } from "../services/api";
+import { saveStoredDocument } from "../services/api";
 import { loadModelSettings } from "../services/modelSettings";
 import { CalloutBlock } from "../extensions/CalloutBlock";
 import { ToggleBlock } from "../extensions/ToggleBlock";
@@ -470,6 +471,13 @@ function EditorToolbar({
           >
             <span className="heading-icon-text">H5</span> 标题 5
           </button>
+          <button
+            className="dropdown-item"
+            onClick={() => editor.chain().focus().toggleHeading({ level: 6 }).run()}
+            type="button"
+          >
+            <span className="heading-icon-text">H6</span> 标题 6
+          </button>
         </DropdownButton>
       </div>
 
@@ -621,7 +629,14 @@ function EditorToolbar({
 function htmlToMarkdown(html: string): string {
   const container = document.createElement("div");
   container.innerHTML = html;
-  return nodeToMarkdown(container).trim();
+  return nodeToMarkdown(container);
+}
+
+function isEditorBodyEmpty(editor: Editor) {
+  const doc = editor.state.doc;
+  if (doc.childCount !== 1) return false;
+  const firstChild = doc.child(0);
+  return firstChild.type.name === "paragraph" && firstChild.textContent.trim() === "";
 }
 
 function detectMarkdownLocally(content: string) {
@@ -697,10 +712,11 @@ function markdownToHtml(markdown: string) {
     if (!line.trim()) {
       closeList();
       closeBlockquote();
+      html.push("<p></p>");
       continue;
     }
 
-    const heading = line.match(/^(#{1,5})\s+(.+)$/);
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       closeList();
       closeBlockquote();
@@ -843,7 +859,7 @@ function nodeToMarkdown(node: ChildNode): string {
     return `<details>\n<summary>${title}</summary>\n\n${body}\n\n</details>`;
   }
   if (tag === "div" || tag === "section") {
-    return Array.from(node.childNodes).map(nodeToMarkdown).filter(Boolean).join("\n\n");
+    return Array.from(node.childNodes).map(nodeToMarkdown).join("\n");
   }
   return inline();
 }
@@ -916,23 +932,35 @@ type EditorPageProps = {
   documentId?: string;
   documentTitle?: string;
   onTitleChange?: (title: string) => void;
+  onDocumentSaved?: (document: { id: string; title: string; content: string; last_saved_at: string }) => void;
+  onSaveStateChange?: (state: { label: string; status: "idle" | "saving" | "saved" | "failed" }) => void;
 };
 
-export function EditorPage({ documentContent, documentId, documentTitle: externalDocumentTitle, onTitleChange }: EditorPageProps) {
+export function EditorPage({
+  documentContent,
+  documentId,
+  documentTitle: externalDocumentTitle,
+  onDocumentSaved,
+  onSaveStateChange,
+  onTitleChange,
+}: EditorPageProps) {
   const [documentTitle, setDocumentTitle] = useState("");
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [bodyEmpty, setBodyEmpty] = useState(true);
+  const [contentVersion, setContentVersion] = useState(0);
   const [, setSelectionVersion] = useState(0);
   const [pendingMarkdown, setPendingMarkdown] = useState<{ content: string; features: string[] } | null>(null);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantStreaming, setAssistantStreaming] = useState(false);
   const markdownPastePromptedRef = useRef(false);
+  const loadingDocumentRef = useRef(false);
+  const loadedDocumentIdRef = useRef<string | null>(null);
 
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
-        heading: { levels: [1, 2, 3, 4, 5] },
+        heading: { levels: [1, 2, 3, 4, 5, 6] },
       }),
       TextStyle,
       Color,
@@ -951,8 +979,13 @@ export function EditorPage({ documentContent, documentId, documentTitle: externa
       StructureFold,
     ],
     content: initialContent,
-    onCreate: ({ editor }) => setBodyEmpty(!editor.getText().trim()),
-    onUpdate: ({ editor }) => setBodyEmpty(!editor.getText().trim()),
+    onCreate: ({ editor }) => setBodyEmpty(isEditorBodyEmpty(editor)),
+    onUpdate: ({ editor }) => {
+      setBodyEmpty(isEditorBodyEmpty(editor));
+      if (!loadingDocumentRef.current) {
+        setContentVersion((version) => version + 1);
+      }
+    },
     onSelectionUpdate: () => setSelectionVersion((version) => version + 1),
     editorProps: {
       handlePaste: (_view, event) => {
@@ -977,12 +1010,46 @@ export function EditorPage({ documentContent, documentId, documentTitle: externa
 
   useEffect(() => {
     if (!editor || !documentId) return;
+    if (loadedDocumentIdRef.current === documentId) return;
+    loadedDocumentIdRef.current = documentId;
+    loadingDocumentRef.current = true;
     const nextTitle = externalDocumentTitle || "";
     setDocumentTitle(nextTitle);
     onTitleChange?.(nextTitle);
     editor.commands.setContent(markdownToHtml(documentContent || ""));
-    setBodyEmpty(!(documentContent || "").trim());
+    setBodyEmpty(isEditorBodyEmpty(editor));
+    window.setTimeout(() => {
+      setBodyEmpty(isEditorBodyEmpty(editor));
+      loadingDocumentRef.current = false;
+    }, 0);
   }, [documentId, documentContent, externalDocumentTitle, editor, onTitleChange]);
+
+  useEffect(() => {
+    if (!editor || !documentId || loadingDocumentRef.current) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        onSaveStateChange?.({ label: "保存中", status: "saving" });
+        const saved = await saveStoredDocument(documentId, {
+          title: documentTitle,
+          content: htmlToMarkdown(editor.getHTML()),
+        });
+        onDocumentSaved?.({
+          id: saved.id,
+          title: saved.title,
+          content: saved.content,
+          last_saved_at: saved.last_saved_at,
+        });
+        onSaveStateChange?.({
+          label: `已保存 ${new Date(saved.last_saved_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`,
+          status: "saved",
+        });
+      } catch {
+        onSaveStateChange?.({ label: "保存失败", status: "failed" });
+      }
+    }, 900);
+
+    return () => window.clearTimeout(timer);
+  }, [documentId, documentTitle, editor, contentVersion, onDocumentSaved, onSaveStateChange]);
 
   const writeToClipboard = async (type: "markdown" | "plain") => {
     if (!editor) return;
