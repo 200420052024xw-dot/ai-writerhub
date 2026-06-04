@@ -49,12 +49,19 @@ def ensure_rag_tables() -> None:
                 chunk_id TEXT PRIMARY KEY,
                 document_id TEXT NOT NULL,
                 document_title TEXT NOT NULL,
+                paragraph_id TEXT,
+                paragraph_index INTEGER,
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 content_hash TEXT NOT NULL
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(rag_chunks)").fetchall()}
+        if "paragraph_id" not in columns:
+            conn.execute("ALTER TABLE rag_chunks ADD COLUMN paragraph_id TEXT")
+        if "paragraph_index" not in columns:
+            conn.execute("ALTER TABLE rag_chunks ADD COLUMN paragraph_index INTEGER")
         conn.execute(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
@@ -157,11 +164,42 @@ def split_document_chunks(content: str) -> list[str]:
             chunks.append(current_chunk)
             prefix = overlap_prefix(current_chunk)
             current_chunk = f"{prefix}\n\n{block}".strip() if prefix else block
+        else:
+            current_chunk = block
         while len(current_chunk) > TARGET_CHUNK_SIZE + OVERLAP_SIZE:
             chunks.append(current_chunk[:TARGET_CHUNK_SIZE].strip())
             current_chunk = current_chunk[TARGET_CHUNK_SIZE - OVERLAP_SIZE :].strip()
     if current_chunk:
         chunks.append(current_chunk)
+    return chunks
+
+
+def paragraph_to_rag_text(content: str, paragraph_type: str, level: int) -> str:
+    if paragraph_type == "heading":
+        return f"{'#' * max(2, min(5, level + 1))} {content}".strip()
+    return content
+
+
+def split_document_paragraph_chunks(document: DocumentDetail) -> list[tuple[str | None, int | None, str]]:
+    if not document.paragraphs:
+        return [(None, None, chunk) for chunk in split_document_chunks(document.content)]
+
+    chunks: list[tuple[str | None, int | None, str]] = []
+    current_heading = ""
+    for paragraph in document.paragraphs:
+        if paragraph.type == "title":
+            current_heading = paragraph.content.strip()
+            continue
+        text = paragraph_to_rag_text(paragraph.content, paragraph.type, paragraph.level)
+        if not text.strip():
+            continue
+        if paragraph.type == "heading":
+            current_heading = paragraph.content.strip()
+            chunks.append((paragraph.id, paragraph.paragraph_index, text))
+            continue
+        source = f"{current_heading}\n\n{text}".strip() if current_heading else text
+        for chunk in split_document_chunks(source):
+            chunks.append((paragraph.id, paragraph.paragraph_index, chunk))
     return chunks
 
 
@@ -177,13 +215,14 @@ def delete_document_index(document_id: str) -> None:
         pass
 
 
-async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConfig | None = None) -> None:
+async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConfig | None = None) -> int:
     rag_config = runtime_rag_config(config)
     ensure_rag_tables()
     delete_document_index(document.id)
-    chunks = split_document_chunks(document.content)
-    if not chunks:
-        return
+    paragraph_chunks = split_document_paragraph_chunks(document)
+    if not paragraph_chunks:
+        return 0
+    chunks = [chunk for _, _, chunk in paragraph_chunks]
 
     embeddings = await embed_texts(chunks, rag_config)
     ids = [f"{document.id}:{index}" for index in range(len(chunks))]
@@ -191,10 +230,12 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
         {
             "document_id": document.id,
             "document_title": document.title,
+            "paragraph_id": paragraph_id or "",
+            "paragraph_index": paragraph_index if paragraph_index is not None else -1,
             "chunk_index": index,
             "content_hash": document.content_hash,
         }
-        for index in range(len(chunks))
+        for index, (paragraph_id, paragraph_index, _) in enumerate(paragraph_chunks)
     ]
     chroma_collection().add(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
 
@@ -203,10 +244,19 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
             conn.execute(
                 """
                 INSERT OR REPLACE INTO rag_chunks
-                (chunk_id, document_id, document_title, chunk_index, content, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (chunk_id, document_id, document_title, paragraph_id, paragraph_index, chunk_index, content, content_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (chunk_id, document.id, document.title, metadata["chunk_index"], chunk, document.content_hash),
+                (
+                    chunk_id,
+                    document.id,
+                    document.title,
+                    metadata["paragraph_id"],
+                    metadata["paragraph_index"],
+                    metadata["chunk_index"],
+                    chunk,
+                    document.content_hash,
+                ),
             )
             conn.execute(
                 """
@@ -216,6 +266,7 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
                 (chunk_id, document.id, document.title, chunk),
             )
         conn.commit()
+    return len(chunks)
 
 
 def normalize_scores(items: list[RagSearchResult]) -> list[RagSearchResult]:
@@ -247,6 +298,8 @@ async def vector_search(question: str, document_ids: list[str], config: RagRunti
                 chunk_id=chunk_id,
                 document_id=metadata["document_id"],
                 document_title=metadata["document_title"],
+                paragraph_id=str(metadata.get("paragraph_id") or "") or None,
+                paragraph_index=int(metadata["paragraph_index"]) if int(metadata.get("paragraph_index", -1)) >= 0 else None,
                 chunk_index=int(metadata["chunk_index"]),
                 content=content,
                 score=max(0.0, 1.0 - float(distance)),
@@ -267,13 +320,21 @@ def fts_search(question: str, document_ids: list[str]) -> list[RagSearchResult]:
     doc_filter = ""
     if document_ids:
         placeholders = ",".join("?" for _ in document_ids)
-        doc_filter = f" AND document_id IN ({placeholders})"
+        doc_filter = f" AND rag_chunks_fts.document_id IN ({placeholders})"
         params.extend(document_ids)
     with connect() as conn:
         rows = conn.execute(
             f"""
-            SELECT chunk_id, document_id, document_title, content, bm25(rag_chunks_fts) AS rank
+            SELECT
+                rag_chunks_fts.chunk_id,
+                rag_chunks_fts.document_id,
+                rag_chunks_fts.document_title,
+                rag_chunks.paragraph_id,
+                rag_chunks.paragraph_index,
+                rag_chunks_fts.content,
+                bm25(rag_chunks_fts) AS rank
             FROM rag_chunks_fts
+            LEFT JOIN rag_chunks ON rag_chunks.chunk_id = rag_chunks_fts.chunk_id
             WHERE rag_chunks_fts MATCH ?{doc_filter}
             ORDER BY rank
             LIMIT ?
@@ -285,6 +346,8 @@ def fts_search(question: str, document_ids: list[str]) -> list[RagSearchResult]:
             chunk_id=row["chunk_id"],
             document_id=row["document_id"],
             document_title=row["document_title"],
+            paragraph_id=row["paragraph_id"] or None,
+            paragraph_index=row["paragraph_index"],
             chunk_index=int(str(row["chunk_id"]).split(":")[-1]),
             content=row["content"],
             score=-float(row["rank"]),
@@ -346,6 +409,8 @@ def build_rag_messages(question: str, contexts: list[RagSearchResult]) -> list[d
             "content": (
                 "你是文枢 AI WriterHub 的知识库问答助手。只根据给定参考片段回答。"
                 "回答中必须用 [1]、[2] 形式标注来源；如果资料不足，明确说明无法从当前文档确认。"
+                "只使用纯文本输出，不要使用 Markdown 标题、表格、代码块、粗体、引用块或其他 Markdown 包装。"
+                "保持段落清晰；如需分点，请使用普通编号或短句换行。"
             ),
         },
         {"role": "user", "content": f"参考片段：\n{context_text}\n\n问题：{question}"},

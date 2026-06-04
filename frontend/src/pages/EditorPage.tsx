@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TextStyle } from "@tiptap/extension-text-style";
@@ -31,7 +31,14 @@ import {
   Send,
 } from "lucide-react";
 import { API_BASE_URL } from "../services/api";
-import { saveStoredDocument } from "../services/api";
+import {
+  getDocumentAssistantHistory,
+  saveDocumentAssistantHistory,
+  saveStoredDocumentParagraphs,
+  type StoredDocumentDetail,
+  type StoredDocumentParagraph,
+  type StoredDocumentParagraphInput,
+} from "../services/api";
 import { loadModelSettings } from "../services/modelSettings";
 import { CalloutBlock } from "../extensions/CalloutBlock";
 import { ToggleBlock } from "../extensions/ToggleBlock";
@@ -782,6 +789,58 @@ function markdownToHtml(markdown: string) {
   return html.join("\n");
 }
 
+function paragraphToMarkdown(paragraph: Pick<StoredDocumentParagraph, "type" | "level" | "content">) {
+  if (paragraph.type === "title") return `# ${paragraph.content}`.trim();
+  if (paragraph.type === "heading") return `${"#".repeat(Math.max(2, Math.min(5, paragraph.level + 1)))} ${paragraph.content}`.trim();
+  return paragraph.content;
+}
+
+function bodyMarkdownFromParagraphs(paragraphs?: StoredDocumentParagraph[]) {
+  return (paragraphs || [])
+    .filter((paragraph) => paragraph.type !== "title")
+    .map(paragraphToMarkdown)
+    .filter((content) => content.trim())
+    .join("\n\n");
+}
+
+function titleFromParagraphs(paragraphs?: StoredDocumentParagraph[], fallback = "") {
+  return paragraphs?.find((paragraph) => paragraph.type === "title" && paragraph.content.trim())?.content.trim() || fallback;
+}
+
+function inferParagraphInput(block: string, existing?: StoredDocumentParagraph): StoredDocumentParagraphInput {
+  const trimmed = block.trim();
+  const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+  if (heading) {
+    const markdownLevel = heading[1].length;
+    if (markdownLevel === 1) {
+      return { id: existing?.id, type: "title", level: 0, content: heading[2].trim() };
+    }
+    return { id: existing?.id, type: "heading", level: Math.max(1, Math.min(4, markdownLevel - 1)), content: heading[2].trim() };
+  }
+  if (/^\s*\|.+\|\s*$/m.test(trimmed)) {
+    return { id: existing?.id, type: "table", level: existing?.level || 0, content: trimmed };
+  }
+  if (/^\s*([-*+]|\d+\.)\s+/m.test(trimmed)) {
+    return { id: existing?.id, type: "list", level: existing?.level || 0, content: trimmed };
+  }
+  return { id: existing?.id, type: "paragraph", level: existing?.level || 0, content: trimmed };
+}
+
+function markdownToParagraphInputs(
+  title: string,
+  markdown: string,
+  existingParagraphs?: StoredDocumentParagraph[],
+): StoredDocumentParagraphInput[] {
+  const titleParagraph = existingParagraphs?.find((paragraph) => paragraph.type === "title");
+  const existingBody = (existingParagraphs || []).filter((paragraph) => paragraph.type !== "title");
+  const blocks = markdown.replace(/\r\n/g, "\n").split(/\n\s*\n/);
+  const bodyParagraphs = blocks.map((block, index) => inferParagraphInput(block, existingBody[index])).filter((paragraph) => paragraph.content || paragraph.type === "paragraph");
+  return [
+    { id: titleParagraph?.id, type: "title", level: 0, content: title.trim() || "无标题文档" },
+    ...(bodyParagraphs.length ? bodyParagraphs : [{ id: existingBody[0]?.id, type: "paragraph" as const, level: 0, content: "" }]),
+  ];
+}
+
 function inlineToMarkdown(node: ChildNode): string {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.textContent || "";
@@ -850,7 +909,7 @@ function nodeToMarkdown(node: ChildNode): string {
     return `<details>\n<summary>${title}</summary>\n\n${body}\n\n</details>`;
   }
   if (tag === "div" || tag === "section") {
-    return Array.from(node.childNodes).map(nodeToMarkdown).join("\n");
+    return Array.from(node.childNodes).map(nodeToMarkdown).join("\n\n");
   }
   return inline();
 }
@@ -867,26 +926,38 @@ async function streamAssistantReply({
     throw new Error("暂未配置模型");
   }
 
-  const response = await fetch(`${API_BASE_URL}/api/assistant/chat`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      api_key: settings.apiKey,
-      base_url: settings.baseUrl,
-      model: settings.defaultModel,
-      messages: [
-        ...messages.map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
-      ],
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/api/assistant/chat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        api_key: settings.apiKey,
+        base_url: settings.baseUrl,
+        model: settings.defaultModel,
+        messages: [
+          ...messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+          })),
+        ],
+      }),
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error ? `网络连接失败：${error.message}` : "网络连接失败，请确认后端服务正在运行");
+  }
 
   if (!response.ok || !response.body) {
-    throw new Error("模型请求失败");
+    let message = "模型请求失败";
+    try {
+      const data = await response.json();
+      message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
+    } catch {
+      message = await response.text();
+    }
+    throw new Error(message || "模型请求失败");
   }
 
   const reader = response.body.getReader();
@@ -921,15 +992,17 @@ async function streamAssistantReply({
 type EditorPageProps = {
   documentContent?: string;
   documentId?: string;
+  documentParagraphs?: StoredDocumentParagraph[];
   documentTitle?: string;
   onTitleChange?: (title: string) => void;
-  onDocumentSaved?: (document: { id: string; title: string; content: string; last_saved_at: string }) => void;
+  onDocumentSaved?: (document: StoredDocumentDetail) => void;
   onSaveStateChange?: (state: { label: string; status: "idle" | "saving" | "saved" | "failed" }) => void;
 };
 
 export function EditorPage({
   documentContent,
   documentId,
+  documentParagraphs,
   documentTitle: externalDocumentTitle,
   onDocumentSaved,
   onSaveStateChange,
@@ -944,9 +1017,17 @@ export function EditorPage({
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantStreaming, setAssistantStreaming] = useState(false);
+  const [assistantWidth, setAssistantWidth] = useState(() => Number(localStorage.getItem("writerhub.editorAssistantWidth") || 300));
+  const [assistantVisible, setAssistantVisible] = useState(() => localStorage.getItem("writerhub.editorAssistantVisible") !== "false");
+  const resizingAssistantRef = useRef(false);
   const markdownPastePromptedRef = useRef(false);
   const loadingDocumentRef = useRef(false);
   const loadedDocumentIdRef = useRef<string | null>(null);
+  const documentParagraphsRef = useRef<StoredDocumentParagraph[] | undefined>(documentParagraphs);
+
+  useEffect(() => {
+    documentParagraphsRef.current = documentParagraphs;
+  }, [documentParagraphs]);
 
   const editor = useEditor({
     extensions: [
@@ -1016,32 +1097,89 @@ export function EditorPage({
     if (loadedDocumentIdRef.current === documentId) return;
     loadedDocumentIdRef.current = documentId;
     loadingDocumentRef.current = true;
-    const nextTitle = externalDocumentTitle || "";
+    const nextTitle = titleFromParagraphs(documentParagraphs, externalDocumentTitle || "");
     setDocumentTitle(nextTitle);
     onTitleChange?.(nextTitle);
-    editor.commands.setContent(markdownToHtml(documentContent || ""));
+    editor.commands.setContent(markdownToHtml(bodyMarkdownFromParagraphs(documentParagraphs) || documentContent || ""));
     setBodyEmpty(isEditorBodyEmpty(editor));
     window.setTimeout(() => {
       setBodyEmpty(isEditorBodyEmpty(editor));
       loadingDocumentRef.current = false;
     }, 0);
-  }, [documentId, documentContent, externalDocumentTitle, editor, onTitleChange]);
+  }, [documentId, documentContent, documentParagraphs, externalDocumentTitle, editor, onTitleChange]);
+
+  useEffect(() => {
+    if (!documentId) {
+      setAssistantMessages([]);
+      return;
+    }
+    let cancelled = false;
+    void getDocumentAssistantHistory(documentId).then((history) => {
+      if (cancelled) return;
+      setAssistantMessages(
+        history.messages.map((message) => ({
+          id: crypto.randomUUID(),
+          role: message.role === "assistant" ? "assistant" : "user",
+          content: message.content,
+        })),
+      );
+    }).catch(() => setAssistantMessages([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId]);
+
+  useEffect(() => {
+    if (!documentId) return;
+    const timer = window.setTimeout(() => {
+      void saveDocumentAssistantHistory(
+        documentId,
+        assistantMessages
+          .filter((message) => message.content.trim())
+          .map((message) => ({ role: message.role, content: message.content })),
+      );
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [assistantMessages, documentId]);
+
+  useEffect(() => {
+    localStorage.setItem("writerhub.editorAssistantWidth", String(assistantWidth));
+    localStorage.setItem("writerhub.editorAssistantVisible", String(assistantVisible));
+  }, [assistantWidth, assistantVisible]);
+
+  useEffect(() => {
+    const handleMove = (event: MouseEvent) => {
+      if (!resizingAssistantRef.current) return;
+      const nextWidth = Math.max(0, window.innerWidth - event.clientX - 22);
+      if (nextWidth < 180) {
+        setAssistantVisible(false);
+        setAssistantWidth(0);
+      } else {
+        setAssistantVisible(true);
+        setAssistantWidth(Math.min(520, nextWidth));
+      }
+    };
+    const stopResize = () => {
+      resizingAssistantRef.current = false;
+    };
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", stopResize);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", stopResize);
+    };
+  }, []);
 
   useEffect(() => {
     if (!editor || !documentId || loadingDocumentRef.current) return;
     const timer = window.setTimeout(async () => {
       try {
         onSaveStateChange?.({ label: "保存中", status: "saving" });
-        const saved = await saveStoredDocument(documentId, {
-          title: documentTitle,
-          content: htmlToMarkdown(editor.getHTML()),
-        });
-        onDocumentSaved?.({
-          id: saved.id,
-          title: saved.title,
-          content: saved.content,
-          last_saved_at: saved.last_saved_at,
-        });
+        const saved = await saveStoredDocumentParagraphs(
+          documentId,
+          markdownToParagraphInputs(documentTitle, htmlToMarkdown(editor.getHTML()), documentParagraphsRef.current),
+        );
+        onDocumentSaved?.(saved);
         onSaveStateChange?.({
           label: `已保存 ${new Date(saved.last_saved_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`,
           status: "saved",
@@ -1165,8 +1303,17 @@ export function EditorPage({
         </div>
       )}
 
-      <div className="editor-layout editor-layout-rich">
+      <div
+        className={`editor-layout editor-layout-rich ${assistantVisible ? "" : "assistant-collapsed"}`}
+        style={{ "--assistant-width": assistantVisible ? `${assistantWidth}px` : "0px" } as CSSProperties}
+      >
         <article className="editor-work panel">
+          {!assistantVisible && (
+            <button className="editor-assistant-open" onClick={() => { setAssistantVisible(true); setAssistantWidth(300); }} type="button">
+              <Sparkles size={16} />
+              文枢助手
+            </button>
+          )}
           {editor && <EditorToolbar editor={editor} onCopy={(type) => void writeToClipboard(type)} />}
           <div className="tiptap-editor">
             <input
@@ -1186,10 +1333,14 @@ export function EditorPage({
           </div>
         </article>
 
-        <aside className="side-panel panel">
+        {assistantVisible && <div className="assistant-resizer" onMouseDown={() => { resizingAssistantRef.current = true; }} />}
+
+        {assistantVisible && <aside className="side-panel panel editor-assistant-panel">
           <div className="panel-title">
-            <Sparkles size={20} />
-            <h2>文枢助手</h2>
+            <div className="panel-title-left">
+              <Sparkles size={20} />
+              <h2>文枢助手</h2>
+            </div>
           </div>
 
           <div className="assistant-thread">
@@ -1229,7 +1380,7 @@ export function EditorPage({
               <Send size={17} />
             </button>
           </div>
-        </aside>
+        </aside>}
       </div>
     </section>
   );

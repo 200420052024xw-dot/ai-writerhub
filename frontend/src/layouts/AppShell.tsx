@@ -170,20 +170,15 @@ export function AppShell({ healthState }: AppShellProps) {
         <EditorPage
           documentContent={editorDocument?.content}
           documentId={editorDocument?.id}
+          documentParagraphs={editorDocument?.paragraphs}
           documentTitle={editorDocument?.title}
           onTitleChange={handleEditorTitleChange}
           onSaveStateChange={setSaveState}
           onDocumentSaved={(document) => {
             setEditorDocument((current) => {
               if (!current || current.id !== document.id) return current;
-              const next = {
-                ...current,
-                title: document.title,
-                content: document.content,
-                last_saved_at: document.last_saved_at,
-              };
-              window.localStorage.setItem("writerhub.editorDocument", JSON.stringify(next));
-              return next;
+              window.localStorage.setItem("writerhub.editorDocument", JSON.stringify(document));
+              return document;
             });
           }}
         />
@@ -226,10 +221,19 @@ export function AppShell({ healthState }: AppShellProps) {
       setEditorDocument((current) => {
         if (current?.id !== documentId) return current;
         setEditorTitle("");
+        window.localStorage.removeItem("writerhub.editorDocument");
         return null;
       });
-      setTranslateDocument((current) => (current?.id === documentId ? null : current));
-      setFormatDocument((current) => (current?.id === documentId ? null : current));
+      setTranslateDocument((current) => {
+        if (current?.id !== documentId) return current;
+        window.localStorage.removeItem("writerhub.translateDocument");
+        return null;
+      });
+      setFormatDocument((current) => {
+        if (current?.id !== documentId) return current;
+        window.localStorage.removeItem("writerhub.formatDocument");
+        return null;
+      });
       setFileList((current) => current.filter((document) => document.id !== documentId));
     };
     window.addEventListener("writerhub:document-deleted", handleDeleted);

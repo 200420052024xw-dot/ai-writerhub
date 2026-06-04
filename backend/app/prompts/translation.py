@@ -12,7 +12,7 @@ def source_language(direction: TranslationDirection) -> str:
 def glossary_instruction(glossary: list[GlossaryEntry]) -> str:
     if not glossary:
         return ""
-    lines = [f"  {entry.source} → {entry.target}" for entry in glossary]
+    lines = [f"  {entry.source} -> {entry.target}" for entry in glossary]
     return "以下术语必须使用指定译法：\n" + "\n".join(lines)
 
 
@@ -27,7 +27,7 @@ def translation_style_instruction(options: TranslationOptions, glossary: list[Gl
     if options.unified_terms:
         instructions.append("全文术语保持一致")
     if options.preserve_names:
-        instructions.append("保留产品名、专有名词、Markdown 结构、标题、列表和代码块")
+        instructions.append("保留产品名、人名、机构名、专有名词和代码内容")
     if options.custom_requirements.strip():
         instructions.append(options.custom_requirements.strip())
     if glossary:
@@ -42,11 +42,11 @@ def build_summary_prompts(
     glossary: list[GlossaryEntry] | None = None,
 ) -> tuple[str, str]:
     system_prompt = (
-        "你是翻译规划助手。你的任务是通读全文，为后续分块翻译生成上下文概要。"
-        "只输出概要，不要翻译全文，不要解释过程。"
+        "你是翻译规划助手。你的任务是通读全文，为后续分块翻译生成上下文摘要。"
+        "只输出摘要，不要翻译全文，不要解释过程。"
     )
     user_prompt = (
-        f"请通读以下{source_language(direction)}文本，提炼其主题、关键术语、语气、专有名词、上下文关系，"
+        f"请通读以下{source_language(direction)}文本，提炼主题、关键术语、语气、专有名词和上下文关系，"
         f"并给出后续翻译为{target_language(direction)}时必须遵守的约束。\n"
         f"翻译风格要求：{translation_style_instruction(options, glossary)}。\n\n"
         f"全文如下：\n{text}"
@@ -63,12 +63,14 @@ def build_translation_prompts(
 ) -> tuple[str, str]:
     system_prompt = (
         f"你是专业翻译。请将{source_language(direction)}翻译为{target_language(direction)}。"
-        "只输出译文，不要解释，不要添加说明。必须保留 Markdown 结构。"
+        "只输出译文，不要解释，不要添加说明，不要使用 Markdown 标题、表格、代码块、粗体或列表标记包装。"
+        "保留原文段落数量、段落顺序和空行边界；除目标语言必要调整外，不要合并、拆分、删除或新增段落。"
     )
-    context_part = f"全文上下文概要，用于保持术语和语气一致：\n{context_summary}\n\n" if context_summary else ""
+    context_part = f"全文上下文摘要，用于保持术语和语气一致：\n{context_summary}\n\n" if context_summary else ""
     user_prompt = (
         f"{context_part}"
         f"翻译要求：{translation_style_instruction(options, glossary)}。\n\n"
+        f"结构要求：逐段翻译。输出必须是纯文本译文；不要输出 Markdown 语法；不要输出除译文以外的内容。\n\n"
         f"待翻译文本：\n{text}"
     )
     return system_prompt, user_prompt
@@ -76,15 +78,14 @@ def build_translation_prompts(
 
 def build_extract_terms_prompt(text: str, direction: TranslationDirection) -> tuple[str, str]:
     system_prompt = (
-        "你是术语分析助手。你的任务是从文本中提取专业术语和固定表达，并给出它们的标准译法。"
+        "你是术语分析助手。你的任务是从文本中提取专业术语和固定表达，并给出标准译法。"
         "只输出 JSON 格式的术语列表，不要解释。"
     )
     user_prompt = (
         f"请从以下{source_language(direction)}文本中提取专业术语、行业用语、固定表达，"
         f"并给出对应的{target_language(direction)}译法。\n"
-        f"输出格式为 JSON 数组，每项包含 source 和 target 字段。例如：\n"
-        f'[{{"source": "产品需求文档", "target": "PRD"}}]\n\n'
-        f"只输出 JSON 数组，不要其他内容。\n\n"
+        f'输出格式为 JSON 数组，每项包含 source 和 target 字段。例如：\n[{{"source": "产品需求文档", "target": "PRD"}}]\n\n'
+        f"只输出 JSON 数组，不要输出其他内容。\n\n"
         f"文本如下：\n{text}"
     )
     return system_prompt, user_prompt

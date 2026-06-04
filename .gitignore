@@ -11,3 +11,4 @@ backend/**/__pycache__/
 backend/.env
 .tmp_brief_interpret/
 backend/app/storage/documents/
+backend/app/storage/chroma/

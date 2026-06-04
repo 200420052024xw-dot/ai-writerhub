@@ -3,11 +3,13 @@ from fastapi.responses import StreamingResponse
 
 from app.schemas.format import (
     FormatExportDocxRequest,
+    FormatOrganizeRequest,
+    FormatOrganizeResponse,
     FormatParseRequest,
     FormatParseResponse,
     ModelConnectionTestRequest,
 )
-from app.services.format_service import build_docx, parse_format_config
+from app.services.format_service import build_docx, organize_document, parse_format_config
 from app.services.llm_client import RuntimeModelConfig, test_chat_model
 
 
@@ -51,4 +53,17 @@ async def export_format_docx(payload: FormatExportDocxRequest) -> StreamingRespo
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/format/organize", response_model=FormatOrganizeResponse)
+async def organize_format_content(payload: FormatOrganizeRequest) -> FormatOrganizeResponse:
+    return await organize_document(
+        payload.text,
+        payload.config,
+        RuntimeModelConfig(
+            api_key=payload.api_key,
+            base_url=payload.base_url,
+            model=payload.model,
+        ),
     )

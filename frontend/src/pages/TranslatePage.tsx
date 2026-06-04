@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { ClipboardCheck, Copy, Download, Edit3, Languages, Loader2, Settings, Sparkles, Trash2, X } from "lucide-react";
+import { Check, ClipboardCheck, Copy, Download, Edit3, Languages, Loader2, Settings, Sparkles, Trash2, X } from "lucide-react";
 import {
+  createStoredDocument,
   extractTerms,
+  getDocumentTranslationState,
+  saveDocumentTranslationState,
+  saveStoredDocument,
   translateTextStream,
   type ExtractTermsResponse,
   type GlossaryEntry,
+  type StoredDocumentParagraph,
   type TranslationChunk,
   type TranslationDirection,
   type TranslationDisplayMode,
@@ -35,6 +40,14 @@ const defaultOptions: TranslationOptions = {
 };
 
 const GLOSSARY_KEY = "writerhub_glossary";
+const TRANSLATE_STATE_KEY = "writerhub.translatePageState";
+
+type TranslationSaveMode =
+  | "target-only"
+  | "paragraph-source-target"
+  | "paragraph-target-source"
+  | "sentence-source-target"
+  | "sentence-target-source";
 
 function loadGlossary(): GlossaryEntry[] {
   try {
@@ -56,10 +69,30 @@ type TranslationResult = {
   chunks: TranslationChunk[];
   paragraph_pairs: TranslationPair[];
   sentence_pairs: TranslationPair[];
+  direction: TranslationDirection;
 };
 
-function renderSourceText(document?: { title?: string; content: string } | null) {
+type TranslatePageState = {
+  sourceText: string;
+  direction: TranslationDirection;
+  displayMode: TranslationDisplayMode;
+  options: TranslationOptions;
+  result: TranslationResult | null;
+  enableCustomRequirements: boolean;
+  saveMode: TranslationSaveMode;
+};
+
+function paragraphToText(paragraph: StoredDocumentParagraph) {
+  if (paragraph.type === "title") return paragraph.content.trim();
+  if (paragraph.type === "heading") return `${"#".repeat(Math.max(2, Math.min(5, paragraph.level + 1)))} ${paragraph.content}`.trim();
+  return paragraph.content;
+}
+
+function renderSourceText(document?: { title?: string; content: string; paragraphs?: StoredDocumentParagraph[] } | null) {
   if (!document) return "";
+  if (document.paragraphs?.length) {
+    return document.paragraphs.map(paragraphToText).filter((content) => content.trim()).join("\n\n");
+  }
   const title = document.title?.trim() || "";
   const content = document.content
     .replace(/\r\n/g, "\n")
@@ -72,33 +105,237 @@ function renderSourceText(document?: { title?: string; content: string } | null)
   return firstLine === title ? content : `${title}\n\n${content}`;
 }
 
-export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: string; title?: string; content: string } | null }) {
-  const [sourceText, setSourceText] = useState(() => renderSourceText(sourceDocument));
-  const [direction, setDirection] = useState<TranslationDirection>("zh-en");
-  const [displayMode, setDisplayMode] = useState<TranslationDisplayMode>("split");
-  const [options, setOptions] = useState<TranslationOptions>(defaultOptions);
-  const [result, setResult] = useState<TranslationResult | null>(null);
+function splitParagraphsForDisplay(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  const paragraphs = normalized.split(/\n\s*\n+/).map((item) => item.trim()).filter(Boolean);
+  if (paragraphs.length > 1) return paragraphs;
+  const lines = normalized.split("\n").map((item) => item.trim()).filter(Boolean);
+  return lines.length > 1 ? lines : paragraphs;
+}
+
+function splitSentencesForDisplay(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const matches = normalized.match(/[^。！？!?；;.]+[。！？!?；;.]?/g);
+  return (matches || [normalized]).map((item) => item.trim()).filter(Boolean);
+}
+
+function buildDisplayParagraphPairs(result: TranslationResult | null, sourceText: string): TranslationPair[] {
+  if (!result) return [];
+  const existingPairs = result.paragraph_pairs.length > 0 ? result.paragraph_pairs : result.chunks.flatMap((chunk) => chunk.paragraph_pairs);
+  if (existingPairs.length > 1) return existingPairs;
+  const sourceParagraphs = splitParagraphsForDisplay(sourceText);
+  const targetParagraphs = splitParagraphsForDisplay(result.target_text);
+  if (sourceParagraphs.length > 1 && sourceParagraphs.length === targetParagraphs.length) {
+    return sourceParagraphs.map((source, index) => ({ source, target: targetParagraphs[index] }));
+  }
+  return existingPairs.length > 0 ? existingPairs : [{ source: sourceText, target: result.target_text }];
+}
+
+function buildDisplaySentencePairs(paragraphPairs: TranslationPair[], result: TranslationResult | null): TranslationPair[] {
+  if (!result) return [];
+  if (result.sentence_pairs.length > 0) return result.sentence_pairs;
+  const pairs: TranslationPair[] = [];
+  paragraphPairs.forEach((pair) => {
+    const sourceSentences = splitSentencesForDisplay(pair.source);
+    const targetSentences = splitSentencesForDisplay(pair.target);
+    if (sourceSentences.length > 1 && sourceSentences.length === targetSentences.length) {
+      sourceSentences.forEach((source, index) => pairs.push({ source, target: targetSentences[index] }));
+      return;
+    }
+    pairs.push(pair);
+  });
+  return pairs;
+}
+
+function splitSentencesStable(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+  const matches = normalized.match(/[^\u3002\uff01\uff1f!?;；.]+[\u3002\uff01\uff1f!?;；.]?/g);
+  return (matches || [normalized]).map((item) => item.trim()).filter(Boolean);
+}
+
+function splitBlankParagraphs(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n").trim();
+  if (!normalized) return [];
+  return normalized.split(/\n\s*\n+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function buildDisplayParagraphPairsSafe(result: TranslationResult | null, sourceText: string): TranslationPair[] {
+  if (!result) return [];
+  const sourceBlankParagraphs = splitBlankParagraphs(sourceText);
+  const targetBlankParagraphs = splitBlankParagraphs(result.target_text || "");
+  if (sourceBlankParagraphs.length > 0 && sourceBlankParagraphs.length === targetBlankParagraphs.length) {
+    return sourceBlankParagraphs.map((source, index) => ({ source, target: targetBlankParagraphs[index] }));
+  }
+  const paragraphPairs = result.paragraph_pairs || [];
+  const chunks = result.chunks || [];
+  const existingPairs = paragraphPairs.length > 0 ? paragraphPairs : chunks.flatMap((chunk) => chunk.paragraph_pairs || []);
+  if (existingPairs.length > 1) return existingPairs;
+  const sourceParagraphs = splitParagraphsForDisplay(sourceText);
+  const targetParagraphs = splitParagraphsForDisplay(result.target_text || "");
+  if (sourceParagraphs.length > 1 && sourceParagraphs.length === targetParagraphs.length) {
+    return sourceParagraphs.map((source, index) => ({ source, target: targetParagraphs[index] }));
+  }
+  return existingPairs.length > 0 ? existingPairs : [{ source: sourceText, target: result.target_text || "" }];
+}
+
+function buildDisplaySentencePairsSafe(paragraphPairs: TranslationPair[], result: TranslationResult | null): TranslationPair[] {
+  if (!result) return [];
+  const pairs: TranslationPair[] = [];
+  paragraphPairs.forEach((pair) => {
+    const sourceSentences = splitSentencesStable(pair.source);
+    const targetSentences = splitSentencesStable(pair.target);
+    if (sourceSentences.length > 0 && sourceSentences.length === targetSentences.length) {
+      sourceSentences.forEach((source, index) => pairs.push({ source, target: targetSentences[index] }));
+      return;
+    }
+    pairs.push(pair);
+  });
+  if (pairs.length > paragraphPairs.length) return pairs;
+  const existingPairs = result.sentence_pairs || [];
+  return existingPairs.length > paragraphPairs.length ? existingPairs : pairs;
+}
+
+function swapPairs(pairs: TranslationPair[]): TranslationPair[] {
+  return pairs.map((pair) => ({ source: pair.target, target: pair.source }));
+}
+
+function swapTranslationResult(result: TranslationResult | null, previousSource: string, nextDirection: TranslationDirection): TranslationResult | null {
+  if (!result?.target_text) return null;
+  return {
+    ...result,
+    target_text: previousSource,
+    direction: nextDirection,
+    chunks: (result.chunks || []).map((chunk) => ({
+      ...chunk,
+      source: chunk.target,
+      target: chunk.source,
+      paragraph_pairs: swapPairs(chunk.paragraph_pairs || []),
+      sentence_pairs: swapPairs(chunk.sentence_pairs || []),
+    })),
+    paragraph_pairs: swapPairs(result.paragraph_pairs || []),
+    sentence_pairs: swapPairs(result.sentence_pairs || []),
+  };
+}
+
+export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: string; title?: string; content: string; paragraphs?: StoredDocumentParagraph[]; glossary?: GlossaryEntry[] } | null }) {
+  const cachedState = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem(TRANSLATE_STATE_KEY) || "null") as TranslatePageState | null;
+    } catch {
+      return null;
+    }
+  }, []);
+  const [sourceText, setSourceText] = useState(() => cachedState?.sourceText ?? renderSourceText(sourceDocument));
+  const [direction, setDirection] = useState<TranslationDirection>(cachedState?.direction ?? "zh-en");
+  const [displayMode, setDisplayMode] = useState<TranslationDisplayMode>(cachedState?.displayMode ?? "split");
+  const [options, setOptions] = useState<TranslationOptions>(cachedState?.options ?? defaultOptions);
+  const [result, setResult] = useState<TranslationResult | null>(cachedState?.result ?? null);
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
 
-  const [glossary, setGlossary] = useState<GlossaryEntry[]>(loadGlossary);
+  const [glossary, setGlossary] = useState<GlossaryEntry[]>(() => sourceDocument?.glossary ?? loadGlossary());
   const [showGlossaryModal, setShowGlossaryModal] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
-  const [enableCustomRequirements, setEnableCustomRequirements] = useState(false);
+  const [enableCustomRequirements, setEnableCustomRequirements] = useState(cachedState?.enableCustomRequirements ?? false);
+  const [saveMode, setSaveMode] = useState<TranslationSaveMode>(cachedState?.saveMode ?? "paragraph-source-target");
+  const [showSaveMenu, setShowSaveMenu] = useState(false);
+  const [loadedTranslationDocumentId, setLoadedTranslationDocumentId] = useState<string | null>(null);
 
   useEffect(() => {
-    setSourceText(renderSourceText(sourceDocument));
-    setResult(null);
-  }, [sourceDocument?.id, sourceDocument?.title, sourceDocument?.content]);
+    let cancelled = false;
+    const loadDocumentTranslation = async () => {
+      if (!sourceDocument?.id) {
+        setSourceText(renderSourceText(sourceDocument));
+        setResult(null);
+        setGlossary(sourceDocument?.glossary || loadGlossary());
+        setLoadedTranslationDocumentId(null);
+        return;
+      }
+      setGlossary(sourceDocument.glossary || []);
+      try {
+        const stored = await getDocumentTranslationState(sourceDocument.id);
+        if (cancelled) return;
+        if (stored) {
+          setSourceText(stored.source_text || renderSourceText(sourceDocument));
+          setDirection(stored.direction);
+          setDisplayMode(stored.display_mode);
+          setOptions(stored.options || defaultOptions);
+          setResult({
+            target_text: stored.target_text,
+            context_summary: stored.context_summary,
+            used_context_summary: stored.used_context_summary,
+            chunks: stored.chunks || [],
+            paragraph_pairs: stored.paragraph_pairs || [],
+            sentence_pairs: stored.sentence_pairs || [],
+            direction: stored.direction,
+          });
+        } else {
+          setSourceText(renderSourceText(sourceDocument));
+          setResult(null);
+          setDisplayMode("split");
+          setDirection("zh-en");
+        }
+        setLoadedTranslationDocumentId(sourceDocument.id);
+      } catch {
+        if (cancelled) return;
+        setSourceText(renderSourceText(sourceDocument));
+        setResult(null);
+        setLoadedTranslationDocumentId(sourceDocument.id);
+      }
+    };
+    void loadDocumentTranslation();
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceDocument?.id]);
 
   useEffect(() => {
-    saveGlossaryToStorage(glossary);
-  }, [glossary]);
+    localStorage.setItem(
+      TRANSLATE_STATE_KEY,
+      JSON.stringify({ sourceText, direction, displayMode, options, result, enableCustomRequirements, saveMode }),
+    );
+  }, [sourceText, direction, displayMode, options, result, enableCustomRequirements, saveMode]);
+
+  useEffect(() => {
+    if (!sourceDocument?.id || loadedTranslationDocumentId !== sourceDocument.id) return;
+    if (!result) return;
+    const timer = window.setTimeout(() => {
+      void saveDocumentTranslationState(sourceDocument.id!, {
+        source_text: sourceText,
+        target_text: result?.target_text || "",
+        direction,
+        display_mode: displayMode,
+        context_summary: result?.context_summary || "",
+        used_context_summary: result?.used_context_summary || false,
+        chunks: result?.chunks || [],
+        paragraph_pairs: result?.paragraph_pairs || [],
+        sentence_pairs: result?.sentence_pairs || [],
+        options,
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [sourceDocument?.id, loadedTranslationDocumentId, sourceText, result, direction, displayMode, options]);
+
+  useEffect(() => {
+    if (!sourceDocument?.id) {
+      saveGlossaryToStorage(glossary);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void saveStoredDocument(sourceDocument.id!, { glossary });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [glossary, sourceDocument?.id]);
 
   const targetText = result?.target_text ?? "";
   const sourceTitle = direction === "zh-en" ? "中文原文" : "English Source";
   const targetTitle = direction === "zh-en" ? "English Translation" : "中文译文";
+  const resultDirectionLabel = result?.direction === "zh-en" ? "中 → 英" : "英 → 中";
+  const currentDirectionLabel = direction === "zh-en" ? "中 → 英" : "英 → 中";
   const modelSettings = loadModelSettings();
   const aiConfig = {
     api_key: modelSettings.apiKey,
@@ -108,11 +345,21 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
 
   const pairs: TranslationPair[] = useMemo(() => {
     if (!result) return [];
-    if (result.paragraph_pairs.length > 0) return displayMode === "sentence" ? result.sentence_pairs : result.paragraph_pairs;
-    return result.chunks.map((c) => ({ source: c.source, target: c.target }));
-  }, [displayMode, result]);
+    const paragraphPairs = buildDisplayParagraphPairsSafe(result, sourceText);
+    if (displayMode === "sentence") return buildDisplaySentencePairsSafe(paragraphPairs, result);
+    return paragraphPairs;
+  }, [displayMode, result, sourceText]);
+  const emptyCompareTarget = result && displayMode === "sentence"
+    ? "句级结构未对齐，请切换到段落交替查看完整结果。"
+    : '点击"开始翻译"后，结果会显示在这里。';
 
   const runTranslation = async () => {
+    if (!modelSettings.apiKey.trim() || !modelSettings.baseUrl.trim() || !modelSettings.defaultModel.trim()) {
+      setMessage("请先在设置页配置模型");
+      window.setTimeout(() => setMessage(""), 2200);
+      return;
+    }
+
     setIsLoading(true);
     setMessage("");
     setProgress(null);
@@ -121,6 +368,8 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     try {
       let totalChunks = 0;
       const chunks: TranslationChunk[] = [];
+      const paragraphPairs: TranslationPair[] = [];
+      const sentencePairs: TranslationPair[] = [];
       let contextSummary = "";
       let usedContext = false;
 
@@ -144,15 +393,24 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
               contextSummary = event.summary;
               break;
             case "chunk":
-              chunks.push({ index: event.index, source: event.source, target: event.target });
+              chunks.push({
+                index: event.index,
+                source: event.source,
+                target: event.target,
+                paragraph_pairs: event.paragraph_pairs || [],
+                sentence_pairs: event.sentence_pairs || [],
+              });
+              paragraphPairs.push(...(event.paragraph_pairs || []));
+              sentencePairs.push(...(event.sentence_pairs || []));
               setProgress({ current: chunks.length, total: totalChunks });
               setResult({
                 target_text: chunks.map((c) => c.target).join("\n\n"),
                 context_summary: contextSummary,
                 used_context_summary: usedContext,
                 chunks: [...chunks],
-                paragraph_pairs: [],
-                sentence_pairs: [],
+                paragraph_pairs: [...paragraphPairs],
+                sentence_pairs: [...sentencePairs],
+                direction,
               });
               break;
             case "complete":
@@ -161,8 +419,9 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
                 context_summary: event.context_summary,
                 used_context_summary: usedContext,
                 chunks: event.chunks,
-                paragraph_pairs: [],
-                sentence_pairs: [],
+                paragraph_pairs: event.paragraph_pairs || event.chunks.flatMap((chunk) => chunk.paragraph_pairs),
+                sentence_pairs: event.sentence_pairs || event.chunks.flatMap((chunk) => chunk.sentence_pairs),
+                direction,
               });
               break;
             case "error":
@@ -188,12 +447,62 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   };
 
   const switchDirection = (nextDirection: TranslationDirection) => {
+    if (nextDirection !== direction && result?.target_text) {
+      const previousSource = sourceText;
+      setSourceText(result.target_text);
+      setResult(swapTranslationResult(result, previousSource, nextDirection));
+    }
     setDirection(nextDirection);
-    setResult(null);
+  };
+
+  const formatPair = (pair: TranslationPair, mode: TranslationSaveMode) => {
+    if (mode.endsWith("target-source")) return `${pair.target}（${pair.source}）`;
+    return `${pair.source}（${pair.target}）`;
+  };
+
+  const buildSavedTranslationContent = () => {
+    if (!result) return "";
+    if (saveMode === "target-only") return result.target_text;
+    const displayParagraphPairs = buildDisplayParagraphPairsSafe(result, sourceText);
+    const sourcePairs = saveMode.startsWith("sentence") ? buildDisplaySentencePairsSafe(displayParagraphPairs, result) : displayParagraphPairs;
+    const fallbackPairs = (result.chunks || []).map((chunk) => ({ source: chunk.source, target: chunk.target }));
+    return (sourcePairs.length > 0 ? sourcePairs : fallbackPairs)
+      .map((pair) => formatPair(pair, saveMode))
+      .join("\n\n");
+  };
+
+  const saveTranslation = async () => {
+    if (!result) return;
+    const content = buildSavedTranslationContent();
+    if (!content.trim()) {
+      setMessage("没有可保存的翻译内容");
+      window.setTimeout(() => setMessage(""), 1800);
+      return;
+    }
+    try {
+      const baseTitle = sourceDocument?.title?.trim() || "未命名文档";
+      await createStoredDocument({
+        title: `${baseTitle} - 翻译结果`,
+        content,
+        glossary,
+      });
+      setMessage("翻译结果已保存到首页");
+      setShowSaveMenu(false);
+    } catch (error) {
+      setMessage(error instanceof Error ? `保存翻译失败：${error.message}` : "保存翻译失败");
+    } finally {
+      window.setTimeout(() => setMessage(""), 1800);
+    }
   };
 
   const runExtractTerms = async () => {
     if (!sourceText.trim()) return;
+    if (!modelSettings.apiKey.trim() || !modelSettings.baseUrl.trim() || !modelSettings.defaultModel.trim()) {
+      setMessage("请先在设置页配置模型");
+      window.setTimeout(() => setMessage(""), 2200);
+      return;
+    }
+
     setIsExtracting(true);
     setMessage("");
 
@@ -251,9 +560,16 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     setGlossary((current) => [...current, { source: "", target: "" }]);
   };
 
-  const previewLimit = 5;
+  const previewLimit = 7;
   const glossaryPreview = glossary.slice(0, previewLimit);
   const hasMore = glossary.length > previewLimit;
+  const saveModeLabels: Record<TranslationSaveMode, string> = {
+    "target-only": "仅保存译文",
+    "paragraph-source-target": "分段：原文（译文）",
+    "paragraph-target-source": "分段：译文（原文）",
+    "sentence-source-target": "逐句：原文（译文）",
+    "sentence-target-source": "逐句：译文（原文）",
+  };
 
   return (
     <section className="page translate-page">
@@ -299,10 +615,14 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
             <article className="panel text-panel">
               <div className="panel-header">
                 <h2>{targetTitle}</h2>
-                <button className="inline-action" onClick={copyTranslation} type="button">
-                  <Copy size={15} />
-                  复制
-                </button>
+                <div className="translation-header-actions">
+                  {result && <span className="translation-result-direction">结果：{resultDirectionLabel}</span>}
+                  {result && result.direction !== direction && <span className="translation-result-stale">当前选择：{currentDirectionLabel}</span>}
+                  <button className="inline-action" onClick={copyTranslation} type="button">
+                    <Copy size={15} />
+                    复制
+                  </button>
+                </div>
               </div>
               <div className="text-body translation-output">
                 {isLoading && progress && !targetText && (
@@ -318,13 +638,17 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
           <article className="panel compare-panel">
             <div className="panel-header">
               <h2>{displayMode === "paragraph" ? "段落交替" : "句对句对照"}</h2>
-              <button className="inline-action" onClick={copyTranslation} type="button">
-                <Copy size={15} />
-                复制译文
-              </button>
+              <div className="translation-header-actions">
+                {result && <span className="translation-result-direction">结果：{resultDirectionLabel}</span>}
+                {result && result.direction !== direction && <span className="translation-result-stale">当前选择：{currentDirectionLabel}</span>}
+                <button className="inline-action" onClick={copyTranslation} type="button">
+                  <Copy size={15} />
+                  复制译文
+                </button>
+              </div>
             </div>
             <div className="compare-list">
-              {(pairs.length ? pairs : [{ source: sourceText, target: '点击"开始翻译"后，结果会显示在这里。' }]).map((pair, index) => (
+              {(pairs.length ? pairs : [{ source: sourceText, target: emptyCompareTarget }]).map((pair, index) => (
                 <div className="compare-row" key={`${pair.source}-${index}`}>
                   <div>
                     <span>原文 {index + 1}</span>
@@ -342,8 +666,33 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
 
         <aside className="side-panel panel">
           <div className="panel-title">
-            <Settings size={20} />
-            <h2>翻译设置</h2>
+            <div className="panel-title-left">
+              <Settings size={20} />
+              <h2>翻译设置</h2>
+            </div>
+            <div className="translation-save-wrapper">
+              <button className="translation-save-btn" disabled={!result} onClick={() => setShowSaveMenu((current) => !current)} type="button">
+                保存翻译
+              </button>
+              {showSaveMenu && (
+                <div className="translation-save-menu">
+                  {(Object.keys(saveModeLabels) as TranslationSaveMode[]).map((mode) => (
+                    <button
+                      className={saveMode === mode ? "active" : ""}
+                      key={mode}
+                      onClick={() => setSaveMode(mode)}
+                      type="button"
+                    >
+                      <span>{saveModeLabels[mode]}</span>
+                      {saveMode === mode && <Check size={14} />}
+                    </button>
+                  ))}
+                  <button className="primary-save-translation" onClick={() => void saveTranslation()} type="button">
+                    保存到首页
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
           <div className="panel-section-label">语体风格</div>
           <label className="style-select-row">
@@ -432,11 +781,16 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
             ) : (
               <>
                 {glossaryPreview.map((entry, index) => (
-                  <p key={`${entry.source}-${index}`}>
-                    {entry.source} → {entry.target}
+                  <p className="term-entry" key={`${entry.source}-${index}`}>
+                    <strong>{entry.source}</strong>
+                    <span>{entry.target}</span>
                   </p>
                 ))}
-                {hasMore && <p className="term-more">还有 {glossary.length - previewLimit} 条...</p>}
+                {hasMore && (
+                  <button className="term-more-button" onClick={() => setShowGlossaryModal(true)} type="button">
+                    显示更多（还有 {glossary.length - previewLimit} 条）
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -458,16 +812,18 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
               ) : (
                 glossary.map((entry, index) => (
                   <div className="glossary-row" key={index}>
-                    <input
+                    <textarea
                       placeholder="原文术语"
                       value={entry.source}
                       onChange={(event) => updateGlossaryEntry(index, "source", event.target.value)}
+                      rows={2}
                     />
                     <span className="glossary-arrow">→</span>
-                    <input
+                    <textarea
                       placeholder="译文术语"
                       value={entry.target}
                       onChange={(event) => updateGlossaryEntry(index, "target", event.target.value)}
+                      rows={2}
                     />
                     <button className="icon-btn danger" onClick={() => removeGlossaryEntry(index)} type="button">
                       <Trash2 size={14} />

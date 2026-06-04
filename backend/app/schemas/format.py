@@ -44,3 +44,15 @@ class ModelConnectionTestRequest(BaseModel):
     api_key: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+
+
+class FormatOrganizeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=50000)
+    config: FormatConfig
+    api_key: str = Field(min_length=1)
+    base_url: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class FormatOrganizeResponse(BaseModel):
+    blocks: list[DocumentBlock]

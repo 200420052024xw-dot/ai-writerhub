@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ChevronDown, FileText, Sparkles } from "lucide-react";
-import { exportFormatDocx, parseFormatPrompt, type FormatDocumentBlock } from "../services/api";
+import { exportFormatDocx, organizeFormat, parseFormatPrompt, type FormatDocumentBlock, type StoredDocumentParagraph } from "../services/api";
 import { loadModelSettings } from "../services/modelSettings";
 
 type FormatConfig = {
@@ -56,6 +56,7 @@ const lineHeightOptions = ["单倍行距", "1.25 倍行距", "1.5 倍行距", "2
 const indentOptions = ["无缩进", "首行缩进 2 字符", "左缩进 2 字符", "悬挂缩进 2 字符"];
 const alignOptions = ["左对齐", "居中对齐", "右对齐", "两端对齐"];
 const paperSizeOptions = ["A4（21 × 29.7cm）", "A5（14.8 × 21cm）", "B5（17.6 × 25cm）", "Letter（21.6 × 27.9cm）"];
+const marginOptions = ["普通：上/下 2.54cm，左/右 3.18cm", "窄边距：上/下/左/右 1.27cm"];
 
 const sampleDocument = {
   title: "文枢 AI WriterHub 产品需求文档",
@@ -76,6 +77,7 @@ export type FormatSourceDocument = {
   id?: string;
   title: string;
   content: string;
+  paragraphs?: StoredDocumentParagraph[];
 };
 
 function contentToBlocks(content: string): FormatDocumentBlock[] {
@@ -94,6 +96,21 @@ function contentToBlocks(content: string): FormatDocumentBlock[] {
     }
   }
   return blocks;
+}
+
+function paragraphsToBlocks(paragraphs?: StoredDocumentParagraph[]): FormatDocumentBlock[] {
+  if (!paragraphs?.length) return [];
+  return paragraphs
+    .filter((paragraph) => paragraph.type !== "title" && paragraph.content.trim())
+    .map((paragraph) => {
+      if (paragraph.type === "heading") {
+        return { type: paragraph.level <= 1 ? "heading1" : "heading2", text: paragraph.content } satisfies FormatDocumentBlock;
+      }
+      if (paragraph.type === "list") {
+        return { type: "bullet", text: paragraph.content.replace(/^\s*([-*+]|\d+\.)\s+/gm, "") } satisfies FormatDocumentBlock;
+      }
+      return { type: "paragraph", text: paragraph.content } satisfies FormatDocumentBlock;
+    });
 }
 
 function parseFontSizePx(value: string) {
@@ -134,12 +151,13 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
   const [exporting, setExporting] = useState(false);
   const [formatPrompt, setFormatPrompt] = useState("");
   const [appliedConfig, setAppliedConfig] = useState<FormatConfig>(defaultFormatConfig);
+  const [organizedBlocks, setOrganizedBlocks] = useState<FormatDocumentBlock[] | null>(null);
   const [message, setMessage] = useState("");
   const exportRef = useRef<HTMLDivElement>(null);
   const activeDocument = sourceDocument
     ? {
         title: sourceDocument.title?.trim() || "无标题文档",
-        blocks: contentToBlocks(sourceDocument.content),
+        blocks: paragraphsToBlocks(sourceDocument.paragraphs).length ? paragraphsToBlocks(sourceDocument.paragraphs) : contentToBlocks(sourceDocument.content),
       }
     : { title: "未选择文件", blocks: [] };
 
@@ -183,13 +201,38 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
     }
   };
 
-  const startOrganizing = () => {
+  const startOrganizing = async () => {
+    const organizeText = sourceDocument?.paragraphs?.length
+      ? sourceDocument.paragraphs.filter((paragraph) => paragraph.type !== "title").map((paragraph) => paragraph.content).join("\n\n")
+      : sourceDocument?.content || "";
+    if (!organizeText) {
+      showMessage("请先选择文档");
+      return;
+    }
+
+    const settings = loadModelSettings();
+    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+      showMessage("请先在设置页配置模型");
+      return;
+    }
+
     setOrganizing(true);
-    window.setTimeout(() => {
+    try {
+      const result = await organizeFormat({
+        text: organizeText,
+        config,
+        api_key: settings.apiKey,
+        base_url: settings.baseUrl,
+        model: settings.defaultModel,
+      });
       setAppliedConfig(config);
+      setOrganizedBlocks(result.blocks);
+      showMessage("整理完成");
+    } catch {
+      showMessage("整理失败，请重试");
+    } finally {
       setOrganizing(false);
-      showMessage("已整理预览");
-    }, 500);
+    }
   };
 
   const downloadDocx = async () => {
@@ -197,7 +240,7 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
     try {
       const blob = await exportFormatDocx({
         title: activeDocument.title,
-        blocks: activeDocument.blocks,
+        blocks: organizedBlocks ?? activeDocument.blocks,
         config: appliedConfig,
       });
       const url = URL.createObjectURL(blob);
@@ -218,6 +261,10 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
     setExportOpen(false);
     window.print();
   };
+
+  useEffect(() => {
+    setOrganizedBlocks(null);
+  }, [sourceDocument?.id]);
 
   useEffect(() => {
     if (!exportOpen) return;
@@ -341,6 +388,16 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
                 </select>
               </label>
               <label className="format-field">
+                <span>页边距</span>
+                <select value={config.margin} onChange={(event) => updateConfig("margin", event.target.value)}>
+                  {marginOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="format-field">
                 <span>标题样式</span>
                 <input placeholder="可不填" value={config.headingStyle} onChange={(event) => updateConfig("headingStyle", event.target.value)} />
               </label>
@@ -362,7 +419,7 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
               </label>
             </div>
           </div>
-          <button className="start-format-action" disabled={organizing} onClick={startOrganizing} type="button">
+          <button className="start-format-action" disabled={organizing || !sourceDocument?.content} onClick={startOrganizing} type="button">
             {organizing ? "正在整理..." : "开始整理"}
           </button>
         </article>
@@ -395,7 +452,7 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
               <span>文枢 AI WriterHub</span>
             </header>
             <h1>{activeDocument.title}</h1>
-            {activeDocument.blocks.map((block, index) => {
+            {(organizedBlocks ?? activeDocument.blocks).map((block, index) => {
               if (block.type === "heading1") return <h2 key={index}>{block.text}</h2>;
               if (block.type === "heading2") return <h3 key={index}>{block.text}</h3>;
               if (block.type === "bullet") return <li key={index}>{block.text}</li>;

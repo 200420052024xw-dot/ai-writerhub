@@ -13,7 +13,7 @@ class RagRuntimeConfig(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = ""
-    recall_strategy: RecallStrategy = "hybrid"
+    recall_strategy: RecallStrategy = "vector"
     enable_rerank: bool = False
     rerank_model_path: str = r"F:\hf_cache\models--Qwen--Qwen3-Reranker-0.6B\snapshots\e61197ed45024b0ed8a2d74b80b4d909f1255473"
 
@@ -39,6 +39,8 @@ class RagSearchResult(BaseModel):
     chunk_id: str
     document_id: str
     document_title: str
+    paragraph_id: str | None = None
+    paragraph_index: int | None = None
     chunk_index: int
     content: str
     score: float

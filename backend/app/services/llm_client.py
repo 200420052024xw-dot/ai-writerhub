@@ -1,10 +1,9 @@
+import json
+
 import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 from typing import AsyncGenerator
-
-from app.core.config import get_settings
-
 
 class RuntimeModelConfig(BaseModel):
     api_key: str = Field(min_length=1)
@@ -12,32 +11,59 @@ class RuntimeModelConfig(BaseModel):
     model: str = Field(min_length=1)
 
 
-async def call_chat_model(system_prompt: str, user_prompt: str, model_config: RuntimeModelConfig | None = None) -> str:
-    settings = get_settings()
-    api_key = model_config.api_key if model_config else settings.ai_api_key
-    base_url = model_config.base_url if model_config else settings.ai_base_url
-    model = model_config.model if model_config else settings.ai_default_model
-    timeout_seconds = settings.ai_timeout_seconds
+def ensure_runtime_model_config(model_config: RuntimeModelConfig | None) -> RuntimeModelConfig:
+    if model_config is None:
+        raise HTTPException(status_code=400, detail="请先在设置页配置 API Key、Base URL 和模型名称")
+    model_config = model_config.model_copy(
+        update={
+            "api_key": model_config.api_key.strip(),
+            "base_url": normalize_base_url(model_config.base_url),
+            "model": model_config.model.strip(),
+        }
+    )
+    if not model_config.api_key or not model_config.base_url or not model_config.model:
+        raise HTTPException(status_code=400, detail="请先在设置页配置 API Key、Base URL 和模型名称")
+    return model_config
 
-    if not api_key.strip():
-        raise HTTPException(status_code=400, detail="AI_API_KEY is not configured in backend/.env")
 
-    url = f"{base_url.rstrip('/')}/chat/completions"
+def normalize_base_url(base_url: str) -> str:
+    return base_url.strip().rstrip("/} \t\r\n")
+
+
+def model_auth_headers(model_config: RuntimeModelConfig) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if "xiaomimimo.com" in model_config.base_url.lower():
+        headers["api-key"] = model_config.api_key
+        headers["Authorization"] = f"Bearer {model_config.api_key}"
+    else:
+        headers["Authorization"] = f"Bearer {model_config.api_key}"
+    return headers
+
+
+def chat_completions_url(base_url: str) -> str:
+    url = normalize_base_url(base_url)
+    if url.endswith("/chat/completions"):
+        return url
+    return f"{url}/chat/completions"
+
+
+async def call_chat_model(system_prompt: str, user_prompt: str, model_config: RuntimeModelConfig | None) -> str:
+    model_config = ensure_runtime_model_config(model_config)
+    url = chat_completions_url(model_config.base_url)
     payload = {
-        "model": model,
+        "model": model_config.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.2,
     }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    if "xiaomimimo.com" in model_config.base_url.lower():
+        payload.update({"max_completion_tokens": 1024, "temperature": 1.0, "top_p": 0.95})
+    headers = model_auth_headers(model_config)
 
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=60) as client:
             response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -60,16 +86,21 @@ async def stream_chat_model(
     messages: list[dict[str, str]],
     model_config: RuntimeModelConfig,
 ) -> AsyncGenerator[bytes, None]:
-    url = f"{model_config.base_url.rstrip('/')}/chat/completions"
+    model_config = ensure_runtime_model_config(model_config)
+    if "xiaomimimo.com" in model_config.base_url.lower():
+        content = await call_chat_messages(messages, model_config)
+        data = {"choices": [{"delta": {"content": content}}]}
+        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
+        yield b"data: [DONE]\n\n"
+        return
+
+    url = chat_completions_url(model_config.base_url)
     payload = {
         "model": model_config.model,
         "stream": True,
         "messages": messages,
     }
-    headers = {
-        "Authorization": f"Bearer {model_config.api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = model_auth_headers(model_config)
 
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as response:
@@ -79,8 +110,37 @@ async def stream_chat_model(
                     yield chunk
 
 
+async def call_chat_messages(messages: list[dict[str, str]], model_config: RuntimeModelConfig | None) -> str:
+    model_config = ensure_runtime_model_config(model_config)
+    url = chat_completions_url(model_config.base_url)
+    payload = {
+        "model": model_config.model,
+        "messages": messages,
+        "temperature": 0.2,
+    }
+    if "xiaomimimo.com" in model_config.base_url.lower():
+        payload.update({"max_completion_tokens": 1024, "temperature": 1.0, "top_p": 0.95})
+    headers = model_auth_headers(model_config)
+
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Model provider returned {exc.response.status_code}: {exc.response.text}") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"Model provider request failed: {exc}") from exc
+
+    data = response.json()
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(status_code=502, detail="Model provider returned an unexpected response shape") from exc
+
+
 async def call_vision_model(image_url: str, prompt: str, model_config: RuntimeModelConfig) -> str:
-    url = f"{model_config.base_url.rstrip('/')}/chat/completions"
+    model_config = ensure_runtime_model_config(model_config)
+    url = chat_completions_url(model_config.base_url)
     payload = {
         "model": model_config.model,
         "messages": [
@@ -94,10 +154,7 @@ async def call_vision_model(image_url: str, prompt: str, model_config: RuntimeMo
         ],
         "temperature": 0.1,
     }
-    headers = {
-        "Authorization": f"Bearer {model_config.api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = model_auth_headers(model_config)
 
     try:
         async with httpx.AsyncClient(timeout=None) as client:

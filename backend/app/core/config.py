@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     rag_api_key: str = Field(default="", alias="RAG_API_KEY")
     rag_base_url: str = Field(default="", alias="RAG_BASE_URL")
     rag_model: str = Field(default="", alias="RAG_MODEL")
-    rag_recall_strategy: str = Field(default="hybrid", alias="RAG_RECALL_STRATEGY")
+    rag_recall_strategy: str = Field(default="vector", alias="RAG_RECALL_STRATEGY")
     rag_enable_rerank: bool = Field(default=False, alias="RAG_ENABLE_RERANK")
     rag_rerank_model_path: str = Field(
       default=r"F:\hf_cache\models--Qwen--Qwen3-Reranker-0.6B\snapshots\e61197ed45024b0ed8a2d74b80b4d909f1255473",

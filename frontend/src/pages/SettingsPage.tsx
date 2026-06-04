@@ -18,8 +18,10 @@ export function SettingsPage() {
   const [ragSaved, setRagSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testState, setTestState] = useState<"idle" | "ok" | "failed">("idle");
+  const [testMessage, setTestMessage] = useState("");
   const [ragTesting, setRagTesting] = useState(false);
   const [ragTestState, setRagTestState] = useState<"idle" | "ok" | "failed">("idle");
+  const [ragTestMessage, setRagTestMessage] = useState("");
   const [aiOpen, setAiOpen] = useState(true);
   const [ragOpen, setRagOpen] = useState(true);
 
@@ -56,36 +58,42 @@ export function SettingsPage() {
   const testConnection = async () => {
     if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
       setTestState("failed");
+      setTestMessage("请填写 API Key、Base URL 和模型名称");
       return;
     }
     setTesting(true);
     setTestState("idle");
+    setTestMessage("");
     try {
       await testFormatModel({ api_key: settings.apiKey, base_url: settings.baseUrl, model: settings.defaultModel });
       setTestState("ok");
-    } catch {
+      setTestMessage("连接正常");
+    } catch (error) {
       setTestState("failed");
+      setTestMessage(error instanceof Error ? error.message : "连接失败");
     } finally {
       setTesting(false);
-      window.setTimeout(() => setTestState("idle"), 2600);
     }
   };
 
   const testRagConnection = async () => {
     if (!ragSettings.apiKey.trim() || !ragSettings.baseUrl.trim() || !ragSettings.model.trim()) {
       setRagTestState("failed");
+      setRagTestMessage("请填写 API Key、Base URL 和模型名称");
       return;
     }
     setRagTesting(true);
     setRagTestState("idle");
+    setRagTestMessage("");
     try {
       await testFormatModel({ api_key: ragSettings.apiKey, base_url: ragSettings.baseUrl, model: ragSettings.model });
       setRagTestState("ok");
-    } catch {
+      setRagTestMessage("连接正常");
+    } catch (error) {
       setRagTestState("failed");
+      setRagTestMessage(error instanceof Error ? error.message : "连接失败");
     } finally {
       setRagTesting(false);
-      window.setTimeout(() => setRagTestState("idle"), 2600);
     }
   };
 
@@ -155,6 +163,7 @@ export function SettingsPage() {
                     保存大模型设置
                   </button>
                 </div>
+                {testMessage && <div className={`settings-test-message ${testState}`}>{testMessage}</div>}
               </>
             )}
           </section>
@@ -243,6 +252,7 @@ export function SettingsPage() {
                     保存 RAG 设置
                   </button>
                 </div>
+                {ragTestMessage && <div className={`settings-test-message ${ragTestState}`}>{ragTestMessage}</div>}
               </>
             )}
           </section>

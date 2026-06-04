@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -31,13 +32,13 @@ class TranslationRequest(BaseModel):
     display_mode: TranslationDisplayMode = "split"
     options: TranslationOptions = Field(default_factory=TranslationOptions)
     glossary: list[GlossaryEntry] = Field(default_factory=list)
-    ai_config: AIModelConfig | None = None
+    ai_config: AIModelConfig
 
 
 class ExtractTermsRequest(BaseModel):
     source_text: str
     direction: TranslationDirection = "zh-en"
-    ai_config: AIModelConfig | None = None
+    ai_config: AIModelConfig
 
 
 class ExtractTermsResponse(BaseModel):
@@ -47,12 +48,16 @@ class ExtractTermsResponse(BaseModel):
 class TranslationPair(BaseModel):
     source: str
     target: str
+    paragraph_id: str | None = None
+    sentence_index: int | None = None
 
 
 class TranslationChunk(BaseModel):
     index: int
     source: str
     target: str
+    paragraph_pairs: list[TranslationPair] = Field(default_factory=list)
+    sentence_pairs: list[TranslationPair] = Field(default_factory=list)
 
 
 class TranslationResponse(BaseModel):
@@ -67,3 +72,31 @@ class TranslationResponse(BaseModel):
     paragraph_pairs: list[TranslationPair]
     sentence_pairs: list[TranslationPair]
     applied_options: TranslationOptions
+
+
+class DocumentTranslationState(BaseModel):
+    document_id: str
+    source_text: str = ""
+    target_text: str = ""
+    direction: TranslationDirection = "zh-en"
+    display_mode: TranslationDisplayMode = "split"
+    context_summary: str = ""
+    used_context_summary: bool = False
+    chunks: list[TranslationChunk] = Field(default_factory=list)
+    paragraph_pairs: list[TranslationPair] = Field(default_factory=list)
+    sentence_pairs: list[TranslationPair] = Field(default_factory=list)
+    options: TranslationOptions = Field(default_factory=TranslationOptions)
+    updated_at: datetime | None = None
+
+
+class DocumentTranslationStateSave(BaseModel):
+    source_text: str = ""
+    target_text: str = ""
+    direction: TranslationDirection = "zh-en"
+    display_mode: TranslationDisplayMode = "split"
+    context_summary: str = ""
+    used_context_summary: bool = False
+    chunks: list[TranslationChunk] = Field(default_factory=list)
+    paragraph_pairs: list[TranslationPair] = Field(default_factory=list)
+    sentence_pairs: list[TranslationPair] = Field(default_factory=list)
+    options: TranslationOptions = Field(default_factory=TranslationOptions)

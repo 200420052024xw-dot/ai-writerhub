@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import hashlib
+import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -15,7 +17,14 @@ from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageDraw, ImageFont
 
 from app.prompts.documents import DOCUMENT_VISION_PROMPT
-from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentSummary, DocumentUpdateRequest
+from app.schemas.documents import (
+    DocumentCreateRequest,
+    DocumentDetail,
+    DocumentParagraph,
+    DocumentParagraphInput,
+    DocumentSummary,
+    DocumentUpdateRequest,
+)
 from app.services.llm_client import RuntimeModelConfig, call_vision_model
 
 
@@ -34,6 +43,86 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def normalize_paragraph_type(value: str) -> str:
+    if value in {"title", "heading", "paragraph", "list", "table"}:
+        return value
+    return "paragraph"
+
+
+def normalize_paragraph_level(value: int, paragraph_type: str) -> int:
+    if paragraph_type == "title":
+        return 0
+    if paragraph_type == "heading":
+        return max(1, min(4, int(value or 1)))
+    return max(0, min(4, int(value or 0)))
+
+
+def strip_page_comments(content: str) -> str:
+    return "\n".join(line for line in content.replace("\r\n", "\n").split("\n") if not line.strip().startswith("<!-- 第"))
+
+
+def infer_block_type(block: str, current_level: int) -> tuple[str, int, str]:
+    stripped = block.strip()
+    if not stripped:
+        return "paragraph", current_level, ""
+    if stripped.startswith("#"):
+        marker, _, text = stripped.partition(" ")
+        if marker and set(marker) == {"#"} and text.strip():
+            level = len(marker)
+            if level == 1:
+                return "title", 0, text.strip()
+            return "heading", max(1, min(4, level - 1)), text.strip()
+    if "\n" in stripped and all(line.strip().startswith("|") for line in stripped.splitlines() if line.strip()):
+        return "table", current_level, stripped
+    if all(re.match(r"^\s*([-*+]|\d+\.)\s+", line) for line in stripped.splitlines() if line.strip()):
+        return "list", current_level, stripped
+    return "paragraph", current_level, stripped
+
+
+def markdown_to_paragraph_inputs(markdown: str, title: str = "") -> list[DocumentParagraphInput]:
+    text = strip_page_comments(markdown or "").strip()
+    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
+    paragraphs: list[DocumentParagraphInput] = []
+    current_level = 0
+    for block in blocks:
+        paragraph_type, level, content = infer_block_type(block, current_level)
+        if paragraph_type == "heading":
+            current_level = level
+        elif paragraph_type == "title":
+            current_level = 0
+        paragraphs.append(DocumentParagraphInput(type=paragraph_type, level=level, content=content))
+
+    if title.strip() and not any(paragraph.type == "title" for paragraph in paragraphs):
+        paragraphs.insert(0, DocumentParagraphInput(type="title", level=0, content=title.strip()))
+    if not paragraphs:
+        paragraphs.append(DocumentParagraphInput(type="title", level=0, content=title.strip() or "无标题文档"))
+        paragraphs.append(DocumentParagraphInput(type="paragraph", level=0, content=""))
+    elif len(paragraphs) == 1 and paragraphs[0].type == "title":
+        paragraphs.append(DocumentParagraphInput(type="paragraph", level=0, content=""))
+    return paragraphs
+
+
+def paragraph_to_markdown(paragraph: DocumentParagraph | DocumentParagraphInput) -> str:
+    content = paragraph.content or ""
+    if paragraph.type == "title":
+        return f"# {content}".strip()
+    if paragraph.type == "heading":
+        level = max(1, min(4, paragraph.level)) + 1
+        return f"{'#' * level} {content}".strip()
+    return content
+
+
+def paragraphs_to_markdown(paragraphs: list[DocumentParagraph] | list[DocumentParagraphInput], include_title: bool = False) -> str:
+    parts: list[str] = []
+    for paragraph in paragraphs:
+        if paragraph.type == "title" and not include_title:
+            continue
+        text = paragraph_to_markdown(paragraph).strip()
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
 def ensure_storage() -> None:
     ORIGINAL_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -47,10 +136,54 @@ def ensure_storage() -> None:
                 content_hash TEXT NOT NULL,
                 rag_status TEXT NOT NULL,
                 last_saved_at TEXT NOT NULL,
-                last_indexed_at TEXT
+                last_indexed_at TEXT,
+                glossary_json TEXT NOT NULL DEFAULT '[]'
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_paragraphs (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                paragraph_index INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                level INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "glossary_json" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN glossary_json TEXT NOT NULL DEFAULT '[]'")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_conversations (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                document_ids_json TEXT NOT NULL,
+                messages_json TEXT NOT NULL,
+                search_results_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_assistant_messages (
+                id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        migrate_legacy_document_paragraphs(conn)
         conn.commit()
 
 
@@ -59,6 +192,138 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def migrate_legacy_document_paragraphs(conn: sqlite3.Connection) -> None:
+    rows = conn.execute("SELECT * FROM documents ORDER BY last_saved_at ASC").fetchall()
+    for row in rows:
+        count = conn.execute("SELECT COUNT(*) AS count FROM document_paragraphs WHERE document_id = ?", (row["id"],)).fetchone()["count"]
+        if count:
+            continue
+        timestamp = row["last_saved_at"] or now_utc().isoformat()
+        paragraphs = markdown_to_paragraph_inputs(row["content"] or "", row["title"])
+        for index, paragraph in enumerate(paragraphs):
+            paragraph_id = uuid.uuid4().hex
+            paragraph_type = normalize_paragraph_type(paragraph.type)
+            level = normalize_paragraph_level(paragraph.level, paragraph_type)
+            conn.execute(
+                """
+                INSERT INTO document_paragraphs
+                (id, document_id, paragraph_index, type, level, content, content_hash, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    paragraph_id,
+                    row["id"],
+                    index,
+                    paragraph_type,
+                    level,
+                    paragraph.content,
+                    content_hash(paragraph.content),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+
+def fetch_paragraphs(conn: sqlite3.Connection, document_id: str) -> list[DocumentParagraph]:
+    rows = conn.execute(
+        """
+        SELECT * FROM document_paragraphs
+        WHERE document_id = ?
+        ORDER BY paragraph_index ASC
+        """,
+        (document_id,),
+    ).fetchall()
+    return [
+        DocumentParagraph(
+            id=row["id"],
+            document_id=row["document_id"],
+            paragraph_index=row["paragraph_index"],
+            type=normalize_paragraph_type(row["type"]),
+            level=normalize_paragraph_level(row["level"], normalize_paragraph_type(row["type"])),
+            content=row["content"],
+            content_hash=row["content_hash"],
+            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
+            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+        )
+        for row in rows
+    ]
+
+
+def title_from_paragraphs(paragraphs: list[DocumentParagraph] | list[DocumentParagraphInput], fallback: str = "无标题文档") -> str:
+    for paragraph in paragraphs:
+        if paragraph.type == "title" and paragraph.content.strip():
+            return paragraph.content.strip()
+    return fallback.strip() or "无标题文档"
+
+
+def replace_document_paragraphs(
+    conn: sqlite3.Connection,
+    document_id: str,
+    paragraphs: list[DocumentParagraphInput],
+    timestamp: str,
+) -> list[DocumentParagraph]:
+    existing_rows = conn.execute("SELECT id, created_at FROM document_paragraphs WHERE document_id = ?", (document_id,)).fetchall()
+    existing_created_at = {row["id"]: row["created_at"] for row in existing_rows}
+    seen_ids: set[str] = set()
+    saved: list[DocumentParagraph] = []
+
+    for index, paragraph in enumerate(paragraphs):
+        paragraph_id = paragraph.id if paragraph.id and paragraph.id in existing_created_at else uuid.uuid4().hex
+        seen_ids.add(paragraph_id)
+        paragraph_type = normalize_paragraph_type(paragraph.type)
+        level = normalize_paragraph_level(paragraph.level, paragraph_type)
+        content = paragraph.content or ""
+        created_at = existing_created_at.get(paragraph_id, timestamp)
+        conn.execute(
+            """
+            INSERT INTO document_paragraphs
+            (id, document_id, paragraph_index, type, level, content, content_hash, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                paragraph_index = excluded.paragraph_index,
+                type = excluded.type,
+                level = excluded.level,
+                content = excluded.content,
+                content_hash = excluded.content_hash,
+                updated_at = excluded.updated_at
+            """,
+            (
+                paragraph_id,
+                document_id,
+                index,
+                paragraph_type,
+                level,
+                content,
+                content_hash(content),
+                created_at,
+                timestamp,
+            ),
+        )
+        saved.append(
+            DocumentParagraph(
+                id=paragraph_id,
+                document_id=document_id,
+                paragraph_index=index,
+                type=paragraph_type,
+                level=level,
+                content=content,
+                content_hash=content_hash(content),
+                created_at=datetime.fromisoformat(created_at),
+                updated_at=datetime.fromisoformat(timestamp),
+            )
+        )
+
+    if seen_ids:
+        placeholders = ",".join("?" for _ in seen_ids)
+        conn.execute(
+            f"DELETE FROM document_paragraphs WHERE document_id = ? AND id NOT IN ({placeholders})",
+            (document_id, *seen_ids),
+        )
+    else:
+        conn.execute("DELETE FROM document_paragraphs WHERE document_id = ?", (document_id,))
+    return saved
 
 
 def row_to_summary(row: sqlite3.Row) -> DocumentSummary:
@@ -72,8 +337,14 @@ def row_to_summary(row: sqlite3.Row) -> DocumentSummary:
     )
 
 
-def row_to_detail(row: sqlite3.Row) -> DocumentDetail:
-    return DocumentDetail(**row_to_summary(row).model_dump(), content=row["content"])
+def row_to_detail(row: sqlite3.Row, paragraphs: list[DocumentParagraph] | None = None) -> DocumentDetail:
+    try:
+        glossary = json.loads(row["glossary_json"] or "[]")
+    except json.JSONDecodeError:
+        glossary = []
+    paragraph_list = paragraphs or []
+    content = paragraphs_to_markdown(paragraph_list) if paragraph_list else row["content"]
+    return DocumentDetail(**row_to_summary(row).model_dump(), content=content, paragraphs=paragraph_list, glossary=glossary)
 
 
 def list_documents() -> list[DocumentSummary]:
@@ -87,9 +358,10 @@ def get_document(document_id: str) -> DocumentDetail:
     ensure_storage()
     with connect() as conn:
         row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        paragraphs = fetch_paragraphs(conn, document_id) if row else []
     if not row:
         raise HTTPException(status_code=404, detail="document not found")
-    return row_to_detail(row)
+    return row_to_detail(row, paragraphs)
 
 
 def delete_document(document_id: str) -> None:
@@ -99,6 +371,10 @@ def delete_document(document_id: str) -> None:
 
     delete_document_index(document_id)
     with connect() as conn:
+        conn.execute("DELETE FROM document_paragraphs WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM document_assistant_messages WHERE document_id = ?", (document_id,))
+        if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_translation_states'").fetchone():
+            conn.execute("DELETE FROM document_translation_states WHERE document_id = ?", (document_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
         conn.commit()
 
@@ -113,16 +389,19 @@ def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
     ensure_storage()
     document_id = uuid.uuid4().hex
     timestamp = now_utc().isoformat()
-    title = payload.title.strip() or "无标题文档"
-    content = payload.content or ""
+    paragraphs = markdown_to_paragraph_inputs(payload.content or "", payload.title)
+    title = title_from_paragraphs(paragraphs, payload.title)
+    content = paragraphs_to_markdown(paragraphs)
+    glossary_json = json.dumps([entry.model_dump() for entry in payload.glossary], ensure_ascii=False)
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None),
+            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None, glossary_json),
         )
+        replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
         conn.commit()
     return get_document(document_id)
 
@@ -131,6 +410,14 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
     current = get_document(document_id)
     next_title = payload.title if payload.title is not None else current.title
     next_content = payload.content if payload.content is not None else current.content
+    next_glossary = payload.glossary if payload.glossary is not None else current.glossary
+    if payload.content is not None:
+        next_paragraphs = markdown_to_paragraph_inputs(next_content, next_title)
+        next_title = title_from_paragraphs(next_paragraphs, next_title)
+        next_content = paragraphs_to_markdown(next_paragraphs)
+    else:
+        next_paragraphs = None
+    glossary_json = json.dumps([entry.model_dump() for entry in next_glossary], ensure_ascii=False)
     next_hash = content_hash(next_content)
     next_status = current.rag_status
 
@@ -145,10 +432,40 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
         conn.execute(
             """
             UPDATE documents
+            SET title = ?, content = ?, content_hash = ?, rag_status = ?, last_saved_at = ?, glossary_json = ?
+            WHERE id = ?
+            """,
+            (next_title.strip() or "无标题文档", next_content, next_hash, next_status, timestamp, glossary_json, document_id),
+        )
+        if next_paragraphs is not None:
+            replace_document_paragraphs(conn, document_id, next_paragraphs, timestamp)
+        conn.commit()
+    return get_document(document_id)
+
+
+def update_document_paragraphs(document_id: str, paragraphs: list[DocumentParagraphInput]) -> DocumentDetail:
+    current = get_document(document_id)
+    timestamp = now_utc().isoformat()
+    normalized = paragraphs or [DocumentParagraphInput(type="title", level=0, content=current.title), DocumentParagraphInput(type="paragraph", level=0, content="")]
+    next_title = title_from_paragraphs(normalized, current.title)
+    next_content = paragraphs_to_markdown(normalized)
+    next_hash = content_hash(next_content)
+    next_status = current.rag_status
+    if next_hash != current.content_hash:
+        if current.rag_status == "not_indexed":
+            next_status = "not_indexed"
+        elif current.rag_status in {"indexed", "outdated", "failed"}:
+            next_status = "outdated"
+
+    with connect() as conn:
+        replace_document_paragraphs(conn, document_id, normalized, timestamp)
+        conn.execute(
+            """
+            UPDATE documents
             SET title = ?, content = ?, content_hash = ?, rag_status = ?, last_saved_at = ?
             WHERE id = ?
             """,
-            (next_title.strip() or "无标题文档", next_content, next_hash, next_status, timestamp, document_id),
+            (next_title, next_content, next_hash, next_status, timestamp, document_id),
         )
         conn.commit()
     return get_document(document_id)
@@ -158,6 +475,14 @@ def mark_document_indexing(document_id: str) -> DocumentDetail:
     get_document(document_id)
     with connect() as conn:
         conn.execute("UPDATE documents SET rag_status = ? WHERE id = ?", ("indexing", document_id))
+        conn.commit()
+    return get_document(document_id)
+
+
+def mark_document_index_failed(document_id: str) -> DocumentDetail:
+    get_document(document_id)
+    with connect() as conn:
+        conn.execute("UPDATE documents SET rag_status = ? WHERE id = ?", ("failed", document_id))
         conn.commit()
     return get_document(document_id)
 
@@ -329,14 +654,18 @@ async def upload_and_parse_document(file: UploadFile, model_config: RuntimeModel
     image_urls = file_to_image_urls(file_path, file_type, document_id)
     content = await recognize_pages(image_urls, model_config)
     title = infer_title(file.filename or file_path.name, content)
+    paragraphs = markdown_to_paragraph_inputs(content, title)
+    title = title_from_paragraphs(paragraphs, title)
+    content = paragraphs_to_markdown(paragraphs)
     timestamp = now_utc().isoformat()
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None),
+            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None, "[]"),
         )
+        replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
         conn.commit()
     return get_document(document_id)

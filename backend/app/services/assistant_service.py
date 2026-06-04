@@ -32,3 +32,6 @@ async def stream_assistant_reply(
     except httpx.HTTPError as exc:
         yield error_event(f"模型连接失败：{exc}")
         yield b"data: [DONE]\n\n"
+    except Exception as exc:
+        yield error_event(f"模型流式响应失败：{exc}")
+        yield b"data: [DONE]\n\n"

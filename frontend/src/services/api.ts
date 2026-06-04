@@ -63,12 +63,16 @@ export type AIModelConfig = {
 export type TranslationPair = {
   source: string;
   target: string;
+  paragraph_id?: string | null;
+  sentence_index?: number | null;
 };
 
 export type TranslationChunk = {
   index: number;
   source: string;
   target: string;
+  paragraph_pairs: TranslationPair[];
+  sentence_pairs: TranslationPair[];
 };
 
 export type TranslationResponse = {
@@ -85,13 +89,28 @@ export type TranslationResponse = {
   applied_options: TranslationOptions;
 };
 
+export type DocumentTranslationState = {
+  document_id: string;
+  source_text: string;
+  target_text: string;
+  direction: TranslationDirection;
+  display_mode: TranslationDisplayMode;
+  context_summary: string;
+  used_context_summary: boolean;
+  chunks: TranslationChunk[];
+  paragraph_pairs: TranslationPair[];
+  sentence_pairs: TranslationPair[];
+  options: TranslationOptions;
+  updated_at: string | null;
+};
+
 export async function translateText(payload: {
   source_text: string;
   direction: TranslationDirection;
   display_mode: TranslationDisplayMode;
   options: TranslationOptions;
   glossary?: GlossaryEntry[];
-  ai_config?: AIModelConfig;
+  ai_config: AIModelConfig;
 }): Promise<TranslationResponse> {
   const response = await fetch(`${API_BASE_URL}/api/translate`, {
     method: "POST",
@@ -111,8 +130,8 @@ export async function translateText(payload: {
 export type TranslationStreamEvent =
   | { type: "start"; total_chunks: number; used_context: boolean }
   | { type: "context_summary"; summary: string }
-  | { type: "chunk"; index: number; source: string; target: string }
-  | { type: "complete"; target_text: string; context_summary: string; chunks: TranslationChunk[] }
+  | { type: "chunk"; index: number; source: string; target: string; paragraph_pairs?: TranslationPair[]; sentence_pairs?: TranslationPair[] }
+  | { type: "complete"; target_text: string; context_summary: string; chunks: TranslationChunk[]; paragraph_pairs?: TranslationPair[]; sentence_pairs?: TranslationPair[] }
   | { type: "error"; message: string };
 
 export async function translateTextStream(
@@ -122,7 +141,7 @@ export async function translateTextStream(
     display_mode: TranslationDisplayMode;
     options: TranslationOptions;
     glossary?: GlossaryEntry[];
-    ai_config?: AIModelConfig;
+    ai_config: AIModelConfig;
   },
   onEvent: (event: TranslationStreamEvent) => void,
 ): Promise<void> {
@@ -171,7 +190,7 @@ export type ExtractTermsResponse = {
 export async function extractTerms(payload: {
   source_text: string;
   direction: TranslationDirection;
-  ai_config?: AIModelConfig;
+  ai_config: AIModelConfig;
 }): Promise<ExtractTermsResponse> {
   const response = await fetch(`${API_BASE_URL}/api/translate/extract-terms`, {
     method: "POST",
@@ -185,6 +204,29 @@ export async function extractTerms(payload: {
     throw new Error("Term extraction failed");
   }
 
+  return response.json();
+}
+
+export async function getDocumentTranslationState(documentId: string): Promise<DocumentTranslationState | null> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-state`);
+  if (!response.ok) {
+    throw new Error(await response.text() || "Translation state load failed");
+  }
+  return response.json();
+}
+
+export async function saveDocumentTranslationState(
+  documentId: string,
+  payload: Omit<DocumentTranslationState, "document_id" | "updated_at">,
+): Promise<DocumentTranslationState> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-state`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await response.text() || "Translation state save failed");
+  }
   return response.json();
 }
 
@@ -250,6 +292,29 @@ export async function exportFormatDocx(payload: {
   return response.blob();
 }
 
+export async function organizeFormat(payload: {
+  text: string;
+  config: FormatConfig;
+  api_key: string;
+  base_url: string;
+  model: string;
+}): Promise<{ blocks: FormatDocumentBlock[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/format/organize`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || "Format organize failed");
+  }
+
+  return response.json();
+}
+
 export async function testFormatModel(payload: {
   api_key: string;
   base_url: string;
@@ -264,7 +329,14 @@ export async function testFormatModel(payload: {
   });
 
   if (!response.ok) {
-    throw new Error("Model connection test failed");
+    let message = "Model connection test failed";
+    try {
+      const data = await response.json();
+      message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
+    } catch {
+      message = await response.text();
+    }
+    throw new Error(message || "Model connection test failed");
   }
 }
 
@@ -277,8 +349,29 @@ export type StoredDocumentSummary = {
   last_indexed_at: string | null;
 };
 
+export type StoredDocumentParagraph = {
+  id: string;
+  document_id?: string | null;
+  paragraph_index: number;
+  type: "title" | "heading" | "paragraph" | "list" | "table";
+  level: number;
+  content: string;
+  content_hash: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type StoredDocumentParagraphInput = {
+  id?: string | null;
+  type: StoredDocumentParagraph["type"];
+  level: number;
+  content: string;
+};
+
 export type StoredDocumentDetail = StoredDocumentSummary & {
   content: string;
+  paragraphs: StoredDocumentParagraph[];
+  glossary: GlossaryEntry[];
 };
 
 export async function listStoredDocuments(): Promise<{ documents: StoredDocumentSummary[] }> {
@@ -300,6 +393,7 @@ export async function getStoredDocument(documentId: string): Promise<StoredDocum
 export async function createStoredDocument(payload: {
   title: string;
   content?: string;
+  glossary?: GlossaryEntry[];
 }): Promise<StoredDocumentDetail> {
   const response = await fetch(`${API_BASE_URL}/api/documents/new`, {
     method: "POST",
@@ -307,7 +401,7 @@ export async function createStoredDocument(payload: {
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error("Document create failed");
+    throw new Error(await response.text() || "Document create failed");
   }
   return response.json();
 }
@@ -317,6 +411,7 @@ export async function saveStoredDocument(
   payload: {
     title?: string;
     content?: string;
+    glossary?: GlossaryEntry[];
   },
 ): Promise<StoredDocumentDetail> {
   const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}`, {
@@ -325,7 +420,22 @@ export async function saveStoredDocument(
     body: JSON.stringify(payload),
   });
   if (!response.ok) {
-    throw new Error("Document save failed");
+    throw new Error(await response.text() || "Document save failed");
+  }
+  return response.json();
+}
+
+export async function saveStoredDocumentParagraphs(
+  documentId: string,
+  paragraphs: StoredDocumentParagraphInput[],
+): Promise<StoredDocumentDetail> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/paragraphs`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paragraphs }),
+  });
+  if (!response.ok) {
+    throw new Error(await response.text() || "Document paragraphs save failed");
   }
   return response.json();
 }
@@ -355,6 +465,8 @@ export type RagSearchResult = {
   chunk_id: string;
   document_id: string;
   document_title: string;
+  paragraph_id?: string | null;
+  paragraph_index?: number | null;
   chunk_index: number;
   content: string;
   score: number;
@@ -365,6 +477,94 @@ export type RagStreamEvent =
   | { type: "retrieval"; results: RagSearchResult[] }
   | { type: "chunk"; content: string }
   | { type: "complete" };
+
+export type ChatMessageRecord = {
+  role: string;
+  content: string;
+};
+
+export type KnowledgeConversation = {
+  id: string;
+  title: string;
+  document_ids: string[];
+  messages: ChatMessageRecord[];
+  search_results: RagSearchResult[];
+  turn_search_results: RagSearchResult[][];
+  created_at: string;
+  updated_at: string;
+};
+
+export async function listKnowledgeConversations(): Promise<{ conversations: KnowledgeConversation[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/knowledge/conversations`);
+  if (!response.ok) throw new Error("Knowledge conversation list failed");
+  return response.json();
+}
+
+export async function createKnowledgeConversation(payload: {
+  title: string;
+  document_ids: string[];
+  messages: ChatMessageRecord[];
+  search_results: RagSearchResult[];
+  turn_search_results?: RagSearchResult[][];
+}): Promise<KnowledgeConversation> {
+  const response = await fetch(`${API_BASE_URL}/api/knowledge/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Knowledge conversation create failed");
+  return response.json();
+}
+
+export async function updateKnowledgeConversationContent(
+  conversationId: string,
+  payload: {
+    title?: string;
+    document_ids: string[];
+    messages: ChatMessageRecord[];
+    search_results: RagSearchResult[];
+    turn_search_results?: RagSearchResult[][];
+  },
+): Promise<KnowledgeConversation> {
+  const response = await fetch(`${API_BASE_URL}/api/knowledge/conversations/${conversationId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Knowledge conversation update failed");
+  return response.json();
+}
+
+export async function renameKnowledgeConversation(conversationId: string, title: string): Promise<KnowledgeConversation> {
+  const response = await fetch(`${API_BASE_URL}/api/knowledge/conversations/${conversationId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Knowledge conversation rename failed");
+  return response.json();
+}
+
+export async function deleteKnowledgeConversation(conversationId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/knowledge/conversations/${conversationId}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(await response.text() || "Knowledge conversation delete failed");
+}
+
+export async function getDocumentAssistantHistory(documentId: string): Promise<{ messages: ChatMessageRecord[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/assistant-history`);
+  if (!response.ok) throw new Error(await response.text() || "Assistant history load failed");
+  return response.json();
+}
+
+export async function saveDocumentAssistantHistory(documentId: string, messages: ChatMessageRecord[]): Promise<{ messages: ChatMessageRecord[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/assistant-history`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Assistant history save failed");
+  return response.json();
+}
 
 export async function indexStoredDocumentWithRag(documentId: string, ragConfig: RagRuntimeConfig): Promise<StoredDocumentDetail> {
   const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/index`, {

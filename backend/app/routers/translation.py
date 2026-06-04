@@ -6,26 +6,23 @@ from fastapi.responses import StreamingResponse
 from app.schemas.translation import (
     ExtractTermsRequest,
     ExtractTermsResponse,
-    TranslationPair,
+    DocumentTranslationState,
+    DocumentTranslationStateSave,
     TranslationRequest,
     TranslationResponse,
 )
 from app.services.translation_service import (
-    build_pairs,
     extract_terms,
-    split_paragraphs,
-    split_sentences,
     translate_with_strategy,
     translate_with_strategy_stream,
 )
 from app.services.llm_client import RuntimeModelConfig
+from app.services.translation_state_service import get_document_translation_state, save_document_translation_state
 
 router = APIRouter()
 
 
-def runtime_model_config(payload_config) -> RuntimeModelConfig | None:
-    if payload_config is None:
-        return None
+def runtime_model_config(payload_config) -> RuntimeModelConfig:
     return RuntimeModelConfig(
         api_key=payload_config.api_key,
         base_url=payload_config.base_url,
@@ -42,11 +39,8 @@ async def translate(payload: TranslationRequest) -> TranslationResponse:
         payload.glossary or None,
         runtime_model_config(payload.ai_config),
     )
-    paragraphs = split_paragraphs(payload.source_text)
-    sentences = split_sentences(payload.source_text)
-    single_chunk = chunks[0] if len(chunks) == 1 else None
-    can_reuse_single_translation = single_chunk is not None and single_chunk.source.strip() == payload.source_text.strip()
-    reused_pair = TranslationPair(source=single_chunk.source, target=single_chunk.target) if single_chunk else None
+    paragraph_pairs = [pair for chunk in chunks for pair in chunk.paragraph_pairs]
+    sentence_pairs = [pair for chunk in chunks for pair in chunk.sentence_pairs]
 
     return TranslationResponse(
         source_text=payload.source_text,
@@ -57,12 +51,8 @@ async def translate(payload: TranslationRequest) -> TranslationResponse:
         used_context_summary=used_context_summary,
         chunk_count=len(chunks),
         chunks=chunks,
-        paragraph_pairs=(
-            [reused_pair] if can_reuse_single_translation and reused_pair else await build_pairs(paragraphs, payload.direction, payload.options, context_summary, payload.glossary or None, runtime_model_config(payload.ai_config))
-        ),
-        sentence_pairs=(
-            [reused_pair] if can_reuse_single_translation and reused_pair else await build_pairs(sentences, payload.direction, payload.options, context_summary, payload.glossary or None, runtime_model_config(payload.ai_config))
-        ),
+        paragraph_pairs=paragraph_pairs,
+        sentence_pairs=sentence_pairs,
         applied_options=payload.options,
     )
 
@@ -91,3 +81,13 @@ async def translate_stream(payload: TranslationRequest) -> StreamingResponse:
 async def extract_terms_endpoint(payload: ExtractTermsRequest) -> ExtractTermsResponse:
     terms = await extract_terms(payload.source_text, payload.direction, runtime_model_config(payload.ai_config))
     return ExtractTermsResponse(terms=terms)
+
+
+@router.get("/documents/{document_id}/translation-state", response_model=DocumentTranslationState | None)
+async def document_translation_state(document_id: str) -> DocumentTranslationState | None:
+    return get_document_translation_state(document_id)
+
+
+@router.put("/documents/{document_id}/translation-state", response_model=DocumentTranslationState)
+async def put_document_translation_state(document_id: str, payload: DocumentTranslationStateSave) -> DocumentTranslationState:
+    return save_document_translation_state(document_id, payload)
