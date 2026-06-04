@@ -67,6 +67,13 @@ export type TranslationPair = {
   sentence_index?: number | null;
 };
 
+export type TranslationSourceParagraph = {
+  id: string;
+  type: "title" | "heading" | "paragraph" | "list" | "table";
+  level: number;
+  content: string;
+};
+
 export type TranslationChunk = {
   index: number;
   source: string;
@@ -106,6 +113,7 @@ export type DocumentTranslationState = {
 
 export async function translateText(payload: {
   source_text: string;
+  source_paragraphs: TranslationSourceParagraph[];
   direction: TranslationDirection;
   display_mode: TranslationDisplayMode;
   options: TranslationOptions;
@@ -137,6 +145,7 @@ export type TranslationStreamEvent =
 export async function translateTextStream(
   payload: {
     source_text: string;
+    source_paragraphs: TranslationSourceParagraph[];
     direction: TranslationDirection;
     display_mode: TranslationDisplayMode;
     options: TranslationOptions;

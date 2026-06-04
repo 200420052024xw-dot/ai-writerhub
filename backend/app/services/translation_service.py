@@ -1,12 +1,15 @@
+import json
 import re
+from collections import defaultdict
 
-from app.prompts.translation import build_extract_terms_prompt, build_summary_prompts, build_translation_prompts
+from app.prompts.translation import build_extract_terms_prompt, build_structured_translation_prompts, build_summary_prompts
 from app.schemas.translation import (
     GlossaryEntry,
     TranslationChunk,
     TranslationDirection,
     TranslationOptions,
     TranslationPair,
+    TranslationSourceParagraph,
 )
 from app.services.llm_client import RuntimeModelConfig, call_chat_model
 
@@ -15,6 +18,7 @@ LONG_TEXT_THRESHOLD = 1200
 CHUNK_TARGET_SIZE = 1600
 CHUNK_HARD_LIMIT = 2200
 LONG_PARAGRAPH_SIZE = 900
+STRUCTURED_UNIT_TARGET_SIZE = 1800
 
 
 def split_paragraphs(text: str) -> list[str]:
@@ -52,6 +56,86 @@ def split_sentences(text: str) -> list[str]:
         return []
     sentences = re.findall(r"[^。！？!?；;.]+[。！？!?；;.]?", normalized)
     return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def paragraph_to_text(paragraph: TranslationSourceParagraph) -> str:
+    content = paragraph.content.strip()
+    if not content:
+        return ""
+    if paragraph.type == "title":
+        return f"# {content}".strip()
+    if paragraph.type == "heading":
+        return f"{'#' * max(2, min(5, paragraph.level + 1))} {content}".strip()
+    return content
+
+
+def source_text_from_paragraphs(paragraphs: list[TranslationSourceParagraph]) -> str:
+    return "\n\n".join(text for text in (paragraph_to_text(paragraph) for paragraph in paragraphs) if text.strip())
+
+
+def split_sentences_stable(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if not normalized:
+        return []
+    sentences = re.findall(r"[^。！？!?；;?.]+[。！？!?；;?.]?", normalized)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def chunk_structured_units(units: list[dict], target_size: int = STRUCTURED_UNIT_TARGET_SIZE) -> list[list[dict]]:
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_size = 0
+    for unit in units:
+        text_size = len(unit.get("text", ""))
+        if current and current_size + text_size > target_size:
+            chunks.append(current)
+            current = [unit]
+            current_size = text_size
+        else:
+            current.append(unit)
+            current_size += text_size
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def build_paragraph_units(paragraphs: list[TranslationSourceParagraph]) -> list[dict]:
+    units: list[dict] = []
+    for paragraph in paragraphs:
+        text = paragraph_to_text(paragraph)
+        if not text.strip():
+            continue
+        units.append(
+            {
+                "id": paragraph.id,
+                "paragraph_id": paragraph.id,
+                "type": paragraph.type,
+                "level": paragraph.level,
+                "text": text,
+            }
+        )
+    return units
+
+
+def build_sentence_units(paragraphs: list[TranslationSourceParagraph]) -> list[dict]:
+    units: list[dict] = []
+    for paragraph in paragraphs:
+        text = paragraph_to_text(paragraph)
+        if not text.strip():
+            continue
+        sentences = split_sentences_stable(text) or [text]
+        for index, sentence in enumerate(sentences):
+            units.append(
+                {
+                    "id": f"{paragraph.id}:{index}",
+                    "paragraph_id": paragraph.id,
+                    "sentence_index": index,
+                    "type": paragraph.type,
+                    "level": paragraph.level,
+                    "text": sentence,
+                }
+            )
+    return units
 
 
 def should_use_long_text_strategy(text: str) -> bool:
@@ -127,7 +211,10 @@ def sentence_pairs_from_paragraph_pairs(paragraph_pairs: list[TranslationPair]) 
         source_sentences = split_sentences(pair.source)
         target_sentences = split_sentences(pair.target)
         if len(source_sentences) == len(target_sentences):
-            pairs.extend(TranslationPair(source=source, target=target) for source, target in zip(source_sentences, target_sentences))
+            pairs.extend(
+                TranslationPair(source=source, target=target, paragraph_id=pair.paragraph_id, sentence_index=index)
+                for index, (source, target) in enumerate(zip(source_sentences, target_sentences))
+            )
     return pairs
 
 
@@ -142,160 +229,220 @@ async def summarize_for_context(
     return await call_chat_model(system_prompt, user_prompt, model_config)
 
 
-async def translate_text(
-    text: str,
+def extract_json_array(raw: str) -> list[dict]:
+    content = raw.strip()
+    if content.startswith("```"):
+        content = content.strip("`").removeprefix("json").strip()
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        start = content.find("[")
+        end = content.rfind("]")
+        if start < 0 or end < start:
+            raise
+        data = json.loads(content[start : end + 1])
+    if not isinstance(data, list):
+        raise ValueError("structured translation response must be a JSON array")
+    return [item for item in data if isinstance(item, dict)]
+
+
+async def translate_structured_unit_chunk(
+    units: list[dict],
     direction: TranslationDirection,
     options: TranslationOptions,
     context_summary: str = "",
     glossary: list[GlossaryEntry] | None = None,
     model_config: RuntimeModelConfig | None = None,
-) -> str:
-    if not text.strip():
-        return ""
+) -> dict[str, str]:
+    if not units:
+        return {}
+    system_prompt, user_prompt = build_structured_translation_prompts(units, direction, options, context_summary, glossary)
+    raw = await call_chat_model(system_prompt, user_prompt, model_config)
+    items = extract_json_array(raw)
+    translated: dict[str, str] = {}
+    for item in items:
+        unit_id = str(item.get("id", "")).strip()
+        text = item.get("text")
+        if unit_id and isinstance(text, str):
+            translated[unit_id] = text.strip()
+    missing_ids = [unit["id"] for unit in units if unit["id"] not in translated]
+    if missing_ids:
+        raise ValueError(f"structured translation response missed ids: {', '.join(missing_ids)}")
+    return translated
 
-    system_prompt, user_prompt = build_translation_prompts(text, direction, options, context_summary, glossary)
-    return await call_chat_model(system_prompt, user_prompt, model_config)
+
+def paragraph_pairs_from_structured_units(units: list[dict], translated: dict[str, str]) -> list[TranslationPair]:
+    return [
+        TranslationPair(
+            source=unit["text"],
+            target=translated.get(unit["id"], ""),
+            paragraph_id=unit["paragraph_id"],
+        )
+        for unit in units
+    ]
 
 
-async def translate_with_strategy(
-    text: str,
+def sentence_pairs_from_structured_units(units: list[dict], translated: dict[str, str]) -> list[TranslationPair]:
+    return [
+        TranslationPair(
+            source=unit["text"],
+            target=translated.get(unit["id"], ""),
+            paragraph_id=unit["paragraph_id"],
+            sentence_index=unit["sentence_index"],
+        )
+        for unit in units
+    ]
+
+
+def paragraph_pairs_from_sentence_pairs(
+    paragraphs: list[TranslationSourceParagraph],
+    sentence_pairs: list[TranslationPair],
+) -> list[TranslationPair]:
+    pairs_by_paragraph: dict[str, list[TranslationPair]] = defaultdict(list)
+    for pair in sentence_pairs:
+        if pair.paragraph_id:
+            pairs_by_paragraph[pair.paragraph_id].append(pair)
+
+    paragraph_pairs: list[TranslationPair] = []
+    for paragraph in paragraphs:
+        source = paragraph_to_text(paragraph)
+        if not source.strip():
+            continue
+        pairs = sorted(pairs_by_paragraph.get(paragraph.id, []), key=lambda item: item.sentence_index if item.sentence_index is not None else 0)
+        target = "".join(pair.target for pair in pairs).strip()
+        paragraph_pairs.append(TranslationPair(source=source, target=target, paragraph_id=paragraph.id))
+    return paragraph_pairs
+
+
+async def translate_structured_with_strategy(
+    paragraphs: list[TranslationSourceParagraph],
     direction: TranslationDirection,
+    display_mode: str,
     options: TranslationOptions,
     glossary: list[GlossaryEntry] | None = None,
     model_config: RuntimeModelConfig | None = None,
 ) -> tuple[str, str, bool, list[TranslationChunk]]:
-    use_context = should_use_long_text_strategy(text)
+    source_text = source_text_from_paragraphs(paragraphs)
+    if not source_text.strip():
+        return "", "", False, []
 
-    if use_context:
-        context_summary = await summarize_for_context(text, direction, options, glossary, model_config)
-        translated_chunks: list[TranslationChunk] = []
+    use_context = should_use_long_text_strategy(source_text)
+    context_summary = await summarize_for_context(source_text, direction, options, glossary, model_config) if use_context else ""
+    if display_mode == "sentence":
+        units = build_sentence_units(paragraphs)
+    else:
+        units = build_paragraph_units(paragraphs)
 
-        for index, chunk in enumerate(chunk_text(text), start=1):
-            translated = await translate_text(chunk, direction, options, context_summary, glossary, model_config)
-            paragraph_pairs = align_pairs(split_translation_units(chunk), translated)
-            translated_chunks.append(
-                TranslationChunk(
-                    index=index,
-                    source=chunk,
-                    target=translated,
-                    paragraph_pairs=paragraph_pairs,
-                    sentence_pairs=sentence_pairs_from_paragraph_pairs(paragraph_pairs),
-                )
+    translated_chunks: list[TranslationChunk] = []
+    all_translated: dict[str, str] = {}
+    chunks = chunk_structured_units(units)
+    for index, unit_chunk in enumerate(chunks, start=1):
+        translated = await translate_structured_unit_chunk(unit_chunk, direction, options, context_summary, glossary, model_config)
+        all_translated.update(translated)
+        if display_mode == "sentence":
+            sentence_pairs = sentence_pairs_from_structured_units(unit_chunk, translated)
+            chunk_paragraph_ids = {unit["paragraph_id"] for unit in unit_chunk}
+            paragraph_pairs = paragraph_pairs_from_sentence_pairs(
+                [paragraph for paragraph in paragraphs if paragraph.id in chunk_paragraph_ids],
+                sentence_pairs,
             )
-
-        target_text = "\n\n".join(chunk.target for chunk in translated_chunks)
-        return target_text, context_summary, True, translated_chunks
-
-    target_text = await translate_text(text, direction, options, glossary=glossary, model_config=model_config)
-    paragraph_pairs = align_pairs(split_translation_units(text), target_text)
-    chunk = (
-        TranslationChunk(
-            index=1,
-            source=text,
-            target=target_text,
-            paragraph_pairs=paragraph_pairs,
-            sentence_pairs=sentence_pairs_from_paragraph_pairs(paragraph_pairs),
+        else:
+            paragraph_pairs = paragraph_pairs_from_structured_units(unit_chunk, translated)
+            sentence_pairs = sentence_pairs_from_paragraph_pairs(paragraph_pairs)
+        translated_chunks.append(
+            TranslationChunk(
+                index=index,
+                source="\n\n".join(unit["text"] for unit in unit_chunk),
+                target="\n\n".join(translated.get(unit["id"], "") for unit in unit_chunk),
+                paragraph_pairs=paragraph_pairs,
+                sentence_pairs=sentence_pairs,
+            )
         )
-        if text.strip()
-        else None
-    )
-    return target_text, "", False, [chunk] if chunk else []
+
+    if display_mode == "sentence":
+        all_sentence_pairs = sentence_pairs_from_structured_units(units, all_translated)
+        all_paragraph_pairs = paragraph_pairs_from_sentence_pairs(paragraphs, all_sentence_pairs)
+    else:
+        all_paragraph_pairs = paragraph_pairs_from_structured_units(units, all_translated)
+
+    target_text = "\n\n".join(pair.target for pair in all_paragraph_pairs if pair.target.strip())
+    return target_text, context_summary, use_context, translated_chunks
 
 
 from typing import AsyncGenerator
 
 
-async def translate_with_strategy_stream(
-    text: str,
+async def translate_structured_with_strategy_stream(
+    paragraphs: list[TranslationSourceParagraph],
     direction: TranslationDirection,
+    display_mode: str,
     options: TranslationOptions,
     glossary: list[GlossaryEntry] | None = None,
     model_config: RuntimeModelConfig | None = None,
 ) -> AsyncGenerator[dict, None]:
-    use_context = should_use_long_text_strategy(text)
+    source_text = source_text_from_paragraphs(paragraphs)
+    if not source_text.strip():
+        yield {"type": "start", "total_chunks": 0, "used_context": False}
+        yield {"type": "complete", "target_text": "", "context_summary": "", "chunks": [], "paragraph_pairs": [], "sentence_pairs": []}
+        return
 
+    use_context = should_use_long_text_strategy(source_text)
+    units = build_sentence_units(paragraphs) if display_mode == "sentence" else build_paragraph_units(paragraphs)
+    unit_chunks = chunk_structured_units(units)
+    yield {"type": "start", "total_chunks": len(unit_chunks), "used_context": use_context}
+
+    context_summary = ""
     if use_context:
-        chunks_text = chunk_text(text)
-        total = len(chunks_text)
-        yield {"type": "start", "total_chunks": total, "used_context": True}
-
-        context_summary = await summarize_for_context(text, direction, options, glossary, model_config)
+        context_summary = await summarize_for_context(source_text, direction, options, glossary, model_config)
         yield {"type": "context_summary", "summary": context_summary}
 
-        translated_chunks: list[TranslationChunk] = []
-        for index, chunk_src in enumerate(chunks_text, start=1):
-            translated = await translate_text(chunk_src, direction, options, context_summary, glossary, model_config)
-            paragraph_pairs = align_pairs(split_translation_units(chunk_src), translated)
-            chunk = TranslationChunk(
-                index=index,
-                source=chunk_src,
-                target=translated,
-                paragraph_pairs=paragraph_pairs,
-                sentence_pairs=sentence_pairs_from_paragraph_pairs(paragraph_pairs),
+    all_translated: dict[str, str] = {}
+    translated_chunks: list[TranslationChunk] = []
+    for index, unit_chunk in enumerate(unit_chunks, start=1):
+        translated = await translate_structured_unit_chunk(unit_chunk, direction, options, context_summary, glossary, model_config)
+        all_translated.update(translated)
+        if display_mode == "sentence":
+            sentence_pairs = sentence_pairs_from_structured_units(unit_chunk, translated)
+            chunk_paragraph_ids = {unit["paragraph_id"] for unit in unit_chunk}
+            paragraph_pairs = paragraph_pairs_from_sentence_pairs(
+                [paragraph for paragraph in paragraphs if paragraph.id in chunk_paragraph_ids],
+                sentence_pairs,
             )
-            translated_chunks.append(chunk)
-            yield {
-                "type": "chunk",
-                "index": index,
-                "source": chunk_src,
-                "target": translated,
-                "paragraph_pairs": [pair.model_dump() for pair in chunk.paragraph_pairs],
-                "sentence_pairs": [pair.model_dump() for pair in chunk.sentence_pairs],
-            }
-
-        target_text = "\n\n".join(c.target for c in translated_chunks)
-        paragraph_pairs = [pair for chunk in translated_chunks for pair in chunk.paragraph_pairs]
-        sentence_pairs = [pair for chunk in translated_chunks for pair in chunk.sentence_pairs]
-        yield {
-            "type": "complete",
-            "target_text": target_text,
-            "context_summary": context_summary,
-            "chunks": [c.model_dump() for c in translated_chunks],
-            "paragraph_pairs": [pair.model_dump() for pair in paragraph_pairs],
-            "sentence_pairs": [pair.model_dump() for pair in sentence_pairs],
-        }
-    else:
-        yield {"type": "start", "total_chunks": 1, "used_context": False}
-
-        target_text = await translate_text(text, direction, options, glossary=glossary, model_config=model_config)
-        paragraph_pairs = align_pairs(split_translation_units(text), target_text)
+        else:
+            paragraph_pairs = paragraph_pairs_from_structured_units(unit_chunk, translated)
+            sentence_pairs = sentence_pairs_from_paragraph_pairs(paragraph_pairs)
         chunk = TranslationChunk(
-            index=1,
-            source=text,
-            target=target_text,
+            index=index,
+            source="\n\n".join(unit["text"] for unit in unit_chunk),
+            target="\n\n".join(translated.get(unit["id"], "") for unit in unit_chunk),
             paragraph_pairs=paragraph_pairs,
-            sentence_pairs=sentence_pairs_from_paragraph_pairs(paragraph_pairs),
+            sentence_pairs=sentence_pairs,
         )
+        translated_chunks.append(chunk)
         yield {
             "type": "chunk",
-            "index": 1,
-            "source": text,
-            "target": target_text,
-            "paragraph_pairs": [pair.model_dump() for pair in chunk.paragraph_pairs],
-            "sentence_pairs": [pair.model_dump() for pair in chunk.sentence_pairs],
-        }
-        yield {
-            "type": "complete",
-            "target_text": target_text,
-            "context_summary": "",
-            "chunks": [chunk.model_dump()],
+            "index": index,
+            "source": chunk.source,
+            "target": chunk.target,
             "paragraph_pairs": [pair.model_dump() for pair in chunk.paragraph_pairs],
             "sentence_pairs": [pair.model_dump() for pair in chunk.sentence_pairs],
         }
 
-
-async def build_pairs(
-    items: list[str],
-    direction: TranslationDirection,
-    options: TranslationOptions,
-    context_summary: str = "",
-    glossary: list[GlossaryEntry] | None = None,
-    model_config: RuntimeModelConfig | None = None,
-) -> list[TranslationPair]:
-    pairs: list[TranslationPair] = []
-    for item in items:
-        pairs.append(TranslationPair(source=item, target=await translate_text(item, direction, options, context_summary, glossary, model_config)))
-    return pairs
+    if display_mode == "sentence":
+        all_sentence_pairs = sentence_pairs_from_structured_units(units, all_translated)
+        all_paragraph_pairs = paragraph_pairs_from_sentence_pairs(paragraphs, all_sentence_pairs)
+    else:
+        all_paragraph_pairs = paragraph_pairs_from_structured_units(units, all_translated)
+        all_sentence_pairs = sentence_pairs_from_paragraph_pairs(all_paragraph_pairs)
+    target_text = "\n\n".join(pair.target for pair in all_paragraph_pairs if pair.target.strip())
+    yield {
+        "type": "complete",
+        "target_text": target_text,
+        "context_summary": context_summary,
+        "chunks": [chunk.model_dump() for chunk in translated_chunks],
+        "paragraph_pairs": [pair.model_dump() for pair in all_paragraph_pairs],
+        "sentence_pairs": [pair.model_dump() for pair in all_sentence_pairs],
+    }
 
 
 async def extract_terms(text: str, direction: TranslationDirection, model_config: RuntimeModelConfig | None = None) -> list[GlossaryEntry]:

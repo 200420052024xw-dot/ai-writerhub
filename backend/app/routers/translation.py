@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.schemas.translation import (
@@ -13,8 +13,8 @@ from app.schemas.translation import (
 )
 from app.services.translation_service import (
     extract_terms,
-    translate_with_strategy,
-    translate_with_strategy_stream,
+    translate_structured_with_strategy,
+    translate_structured_with_strategy_stream,
 )
 from app.services.llm_client import RuntimeModelConfig
 from app.services.translation_state_service import get_document_translation_state, save_document_translation_state
@@ -32,18 +32,22 @@ def runtime_model_config(payload_config) -> RuntimeModelConfig:
 
 @router.post("/translate", response_model=TranslationResponse)
 async def translate(payload: TranslationRequest) -> TranslationResponse:
-    target_text, context_summary, used_context_summary, chunks = await translate_with_strategy(
-        payload.source_text,
+    if not payload.source_paragraphs:
+        raise HTTPException(status_code=400, detail="translation requires stored document paragraphs")
+    target_text, context_summary, used_context_summary, chunks = await translate_structured_with_strategy(
+        payload.source_paragraphs,
         payload.direction,
+        payload.display_mode,
         payload.options,
         payload.glossary or None,
         runtime_model_config(payload.ai_config),
     )
+    source_text = "\n\n".join(paragraph.content for paragraph in payload.source_paragraphs if paragraph.content.strip())
     paragraph_pairs = [pair for chunk in chunks for pair in chunk.paragraph_pairs]
     sentence_pairs = [pair for chunk in chunks for pair in chunk.sentence_pairs]
 
     return TranslationResponse(
-        source_text=payload.source_text,
+        source_text=source_text,
         target_text=target_text,
         direction=payload.direction,
         display_mode=payload.display_mode,
@@ -61,13 +65,17 @@ async def translate(payload: TranslationRequest) -> TranslationResponse:
 async def translate_stream(payload: TranslationRequest) -> StreamingResponse:
     async def event_stream():
         try:
-            async for event in translate_with_strategy_stream(
-                payload.source_text,
+            if not payload.source_paragraphs:
+                raise HTTPException(status_code=400, detail="translation requires stored document paragraphs")
+            stream = translate_structured_with_strategy_stream(
+                payload.source_paragraphs,
                 payload.direction,
+                payload.display_mode,
                 payload.options,
                 payload.glossary or None,
                 runtime_model_config(payload.ai_config),
-            ):
+            )
+            async for event in stream:
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
         except Exception as exc:

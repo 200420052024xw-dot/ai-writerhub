@@ -1,3 +1,5 @@
+import json
+
 from app.schemas.translation import GlossaryEntry, TranslationDirection, TranslationOptions
 
 
@@ -72,6 +74,31 @@ def build_translation_prompts(
         f"翻译要求：{translation_style_instruction(options, glossary)}。\n\n"
         f"结构要求：逐段翻译。输出必须是纯文本译文；不要输出 Markdown 语法；不要输出除译文以外的内容。\n\n"
         f"待翻译文本：\n{text}"
+    )
+    return system_prompt, user_prompt
+
+
+def build_structured_translation_prompts(
+    units: list[dict],
+    direction: TranslationDirection,
+    options: TranslationOptions,
+    context_summary: str = "",
+    glossary: list[GlossaryEntry] | None = None,
+) -> tuple[str, str]:
+    system_prompt = (
+        f"You are a professional translation engine. Translate from {source_language(direction)} to {target_language(direction)}. "
+        "The input is a JSON array of translation units. Each unit has an id and text. "
+        "Return ONLY a valid JSON array. Each output item MUST keep the exact same id and include a translated text field. "
+        "Do not add explanations, Markdown, code fences, comments, or any item that was not present in the input. "
+        "Do not merge, split, reorder, rename, or omit ids."
+    )
+    context_part = f"Full-document context summary for term and tone consistency:\n{context_summary}\n\n" if context_summary else ""
+    user_prompt = (
+        f"{context_part}"
+        f"Translation requirements: {translation_style_instruction(options, glossary)}\n\n"
+        'Output format example: [{"id":"p1","text":"translated text"}]\n'
+        "Input JSON:\n"
+        f"{json.dumps(units, ensure_ascii=False)}"
     )
     return system_prompt, user_prompt
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ClipboardCheck, Copy, Download, Edit3, Languages, Loader2, Settings, Sparkles, Trash2, X } from "lucide-react";
 import {
   createStoredDocument,
@@ -6,15 +6,18 @@ import {
   getDocumentTranslationState,
   saveDocumentTranslationState,
   saveStoredDocument,
+  saveStoredDocumentParagraphs,
   translateTextStream,
   type ExtractTermsResponse,
   type GlossaryEntry,
   type StoredDocumentParagraph,
+  type StoredDocumentParagraphInput,
   type TranslationChunk,
   type TranslationDirection,
   type TranslationDisplayMode,
   type TranslationOptions,
   type TranslationPair,
+  type TranslationSourceParagraph,
   type TranslationStyle,
   type TranslationStreamEvent,
 } from "../services/api";
@@ -105,6 +108,71 @@ function renderSourceText(document?: { title?: string; content: string; paragrap
   return firstLine === title ? content : `${title}\n\n${content}`;
 }
 
+function sourceParagraphsForTranslation(document?: { paragraphs?: StoredDocumentParagraph[] } | null): TranslationSourceParagraph[] | undefined {
+  const paragraphs = document?.paragraphs
+    ?.filter((paragraph) => paragraph.id && paragraph.content.trim())
+    .map((paragraph) => ({
+      id: paragraph.id,
+      type: paragraph.type,
+      level: paragraph.level,
+      content: paragraph.content,
+    }));
+  return paragraphs?.length ? paragraphs : undefined;
+}
+
+function inferParagraphInput(block: string, existing?: StoredDocumentParagraph): StoredDocumentParagraphInput {
+  const trimmed = block.trim();
+  const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
+  if (heading) {
+    const markdownLevel = heading[1].length;
+    if (markdownLevel === 1) {
+      return { id: existing?.id, type: "title", level: 0, content: heading[2].trim() };
+    }
+    return { id: existing?.id, type: "heading", level: Math.max(1, Math.min(4, markdownLevel - 1)), content: heading[2].trim() };
+  }
+  if (/^\s*\|.+\|\s*$/m.test(trimmed)) {
+    return { id: existing?.id, type: "table", level: existing?.level || 0, content: trimmed };
+  }
+  if (/^\s*([-*+]|\d+\.)\s+/m.test(trimmed)) {
+    return { id: existing?.id, type: "list", level: existing?.level || 0, content: trimmed };
+  }
+  return { id: existing?.id, type: "paragraph", level: existing?.level || 0, content: trimmed };
+}
+
+function textToParagraphInputs(text: string, existingParagraphs: StoredDocumentParagraph[]): any[] {
+  const existingTitle = existingParagraphs.find((paragraph) => paragraph.type === "title");
+  const existingBody = existingParagraphs.filter((paragraph) => paragraph.type !== "title");
+  const blocks = text.replace(/\r\n/g, "\n").split(/\n\s*\n+/).map((block) => block.trim());
+  const bodyInputs: StoredDocumentParagraphInput[] = [];
+  let titleInput: StoredDocumentParagraphInput | null = null;
+
+  blocks.forEach((block, index) => {
+    if (!block && blocks.length > 1) return;
+    const inferred = inferParagraphInput(block, existingBody[bodyInputs.length]);
+    if (inferred.type === "title" && titleInput === null) {
+      titleInput = { ...inferred, id: existingTitle?.id };
+      return;
+    }
+    bodyInputs.push(inferred.type === "title" ? { ...inferred, type: "heading" as const, level: 1 } : inferred);
+  });
+
+  return [
+    titleInput || { id: existingTitle?.id, type: "title", level: 0, content: existingTitle?.content || "无标题文档" },
+    ...(bodyInputs.length ? bodyInputs : [{ id: existingBody[0]?.id, type: "paragraph", level: 0, content: "" }]),
+  ];
+}
+
+function paragraphsForTranslation(paragraphs: StoredDocumentParagraph[]): TranslationSourceParagraph[] {
+  return paragraphs
+    .filter((paragraph) => paragraph.id && paragraph.content.trim())
+    .map((paragraph) => ({
+      id: paragraph.id,
+      type: paragraph.type,
+      level: paragraph.level,
+      content: paragraph.content,
+    }));
+}
+
 function splitParagraphsForDisplay(text: string): string[] {
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
@@ -164,12 +232,13 @@ function splitBlankParagraphs(text: string): string[] {
 
 function buildDisplayParagraphPairsSafe(result: TranslationResult | null, sourceText: string): TranslationPair[] {
   if (!result) return [];
+  const paragraphPairs = result.paragraph_pairs || [];
+  if (paragraphPairs.length > 0) return paragraphPairs;
   const sourceBlankParagraphs = splitBlankParagraphs(sourceText);
   const targetBlankParagraphs = splitBlankParagraphs(result.target_text || "");
   if (sourceBlankParagraphs.length > 0 && sourceBlankParagraphs.length === targetBlankParagraphs.length) {
     return sourceBlankParagraphs.map((source, index) => ({ source, target: targetBlankParagraphs[index] }));
   }
-  const paragraphPairs = result.paragraph_pairs || [];
   const chunks = result.chunks || [];
   const existingPairs = paragraphPairs.length > 0 ? paragraphPairs : chunks.flatMap((chunk) => chunk.paragraph_pairs || []);
   if (existingPairs.length > 1) return existingPairs;
@@ -183,6 +252,8 @@ function buildDisplayParagraphPairsSafe(result: TranslationResult | null, source
 
 function buildDisplaySentencePairsSafe(paragraphPairs: TranslationPair[], result: TranslationResult | null): TranslationPair[] {
   if (!result) return [];
+  const existingPairs = result.sentence_pairs || [];
+  if (existingPairs.length > 0) return existingPairs;
   const pairs: TranslationPair[] = [];
   paragraphPairs.forEach((pair) => {
     const sourceSentences = splitSentencesStable(pair.source);
@@ -194,12 +265,11 @@ function buildDisplaySentencePairsSafe(paragraphPairs: TranslationPair[], result
     pairs.push(pair);
   });
   if (pairs.length > paragraphPairs.length) return pairs;
-  const existingPairs = result.sentence_pairs || [];
   return existingPairs.length > paragraphPairs.length ? existingPairs : pairs;
 }
 
 function swapPairs(pairs: TranslationPair[]): TranslationPair[] {
-  return pairs.map((pair) => ({ source: pair.target, target: pair.source }));
+  return pairs.map((pair) => ({ ...pair, source: pair.target, target: pair.source }));
 }
 
 function swapTranslationResult(result: TranslationResult | null, previousSource: string, nextDirection: TranslationDirection): TranslationResult | null {
@@ -244,18 +314,32 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   const [saveMode, setSaveMode] = useState<TranslationSaveMode>(cachedState?.saveMode ?? "paragraph-source-target");
   const [showSaveMenu, setShowSaveMenu] = useState(false);
   const [loadedTranslationDocumentId, setLoadedTranslationDocumentId] = useState<string | null>(null);
+  const [documentParagraphs, setDocumentParagraphs] = useState<StoredDocumentParagraph[]>(() => sourceDocument?.paragraphs || []);
+  const [sourceSaveState, setSourceSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const loadingSourceRef = useRef(false);
+  const documentParagraphsRef = useRef<StoredDocumentParagraph[]>(sourceDocument?.paragraphs || []);
+  const latestSavePromiseRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     const loadDocumentTranslation = async () => {
       if (!sourceDocument?.id) {
+        loadingSourceRef.current = true;
         setSourceText(renderSourceText(sourceDocument));
         setResult(null);
         setGlossary(sourceDocument?.glossary || loadGlossary());
+        setDocumentParagraphs(sourceDocument?.paragraphs || []);
+        documentParagraphsRef.current = sourceDocument?.paragraphs || [];
         setLoadedTranslationDocumentId(null);
+        window.setTimeout(() => {
+          loadingSourceRef.current = false;
+        }, 0);
         return;
       }
+      loadingSourceRef.current = true;
       setGlossary(sourceDocument.glossary || []);
+      setDocumentParagraphs(sourceDocument.paragraphs || []);
+      documentParagraphsRef.current = sourceDocument.paragraphs || [];
       try {
         const stored = await getDocumentTranslationState(sourceDocument.id);
         if (cancelled) return;
@@ -285,6 +369,10 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
         setSourceText(renderSourceText(sourceDocument));
         setResult(null);
         setLoadedTranslationDocumentId(sourceDocument.id);
+      } finally {
+        window.setTimeout(() => {
+          loadingSourceRef.current = false;
+        }, 0);
       }
     };
     void loadDocumentTranslation();
@@ -321,6 +409,33 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   }, [sourceDocument?.id, loadedTranslationDocumentId, sourceText, result, direction, displayMode, options]);
 
   useEffect(() => {
+    if (!sourceDocument?.id || loadedTranslationDocumentId !== sourceDocument.id || loadingSourceRef.current) return;
+    const timer = window.setTimeout(() => {
+      const savePromise = saveStoredDocumentParagraphs(
+        sourceDocument.id!,
+        textToParagraphInputs(sourceText, documentParagraphs),
+      )
+        .then((saved) => {
+          documentParagraphsRef.current = saved.paragraphs;
+          setDocumentParagraphs(saved.paragraphs);
+          setSourceSaveState("saved");
+        })
+        .catch((error) => {
+          setSourceSaveState("failed");
+          throw error;
+        })
+        .finally(() => {
+          if (latestSavePromiseRef.current === savePromise) {
+            latestSavePromiseRef.current = null;
+          }
+        });
+      latestSavePromiseRef.current = savePromise;
+      setSourceSaveState("saving");
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [sourceText, sourceDocument?.id, loadedTranslationDocumentId]);
+
+  useEffect(() => {
     if (!sourceDocument?.id) {
       saveGlossaryToStorage(glossary);
       return;
@@ -354,6 +469,11 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     : '点击"开始翻译"后，结果会显示在这里。';
 
   const runTranslation = async () => {
+    if (!sourceDocument?.id) {
+      setMessage("请先选择一个文件；翻译页修改原文会同步更新当前文件。");
+      window.setTimeout(() => setMessage(""), 2600);
+      return;
+    }
     if (!modelSettings.apiKey.trim() || !modelSettings.baseUrl.trim() || !modelSettings.defaultModel.trim()) {
       setMessage("请先在设置页配置模型");
       window.setTimeout(() => setMessage(""), 2200);
@@ -372,10 +492,19 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
       const sentencePairs: TranslationPair[] = [];
       let contextSummary = "";
       let usedContext = false;
+      if (latestSavePromiseRef.current) {
+        await latestSavePromiseRef.current;
+      }
+      const structuredParagraphs = paragraphsForTranslation(documentParagraphsRef.current);
+      if (structuredParagraphs.length === 0) {
+        setMessage("当前文件没有可翻译的段落");
+        return;
+      }
 
       await translateTextStream(
         {
           source_text: sourceText,
+          source_paragraphs: structuredParagraphs,
           direction,
           display_mode: displayMode,
           options,
@@ -609,7 +738,21 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
                 <h2>{sourceTitle}</h2>
                 <span>{sourceText.length} 字符</span>
               </div>
-              <textarea className="translation-input" onChange={(event) => setSourceText(event.target.value)} value={sourceText} />
+              <div className={`translation-sync-note ${sourceSaveState}`}>
+                修改原文会自动同步更新当前文件
+                {sourceSaveState === "saving" && "，保存中..."}
+                {sourceSaveState === "saved" && "，已保存"}
+                {sourceSaveState === "failed" && "，保存失败"}
+              </div>
+              <textarea
+                className="translation-input"
+                onChange={(event) => {
+                  setSourceText(event.target.value);
+                  setResult(null);
+                  setSourceSaveState("idle");
+                }}
+                value={sourceText}
+              />
             </article>
 
             <article className="panel text-panel">

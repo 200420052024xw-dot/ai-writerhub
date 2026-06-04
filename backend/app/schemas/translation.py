@@ -26,8 +26,16 @@ class AIModelConfig(BaseModel):
     model: str = Field(min_length=1)
 
 
+class TranslationSourceParagraph(BaseModel):
+    id: str
+    type: Literal["title", "heading", "paragraph", "list", "table"] = "paragraph"
+    level: int = 0
+    content: str = ""
+
+
 class TranslationRequest(BaseModel):
     source_text: str = Field(default="")
+    source_paragraphs: list[TranslationSourceParagraph]
     direction: TranslationDirection = "zh-en"
     display_mode: TranslationDisplayMode = "split"
     options: TranslationOptions = Field(default_factory=TranslationOptions)

@@ -80,24 +80,6 @@ export type FormatSourceDocument = {
   paragraphs?: StoredDocumentParagraph[];
 };
 
-function contentToBlocks(content: string): FormatDocumentBlock[] {
-  const blocks: FormatDocumentBlock[] = [];
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    if (/^#{1,2}\s+/.test(trimmed)) {
-      blocks.push({ type: "heading1", text: trimmed.replace(/^#{1,2}\s+/, "") });
-    } else if (/^#{3,6}\s+/.test(trimmed)) {
-      blocks.push({ type: "heading2", text: trimmed.replace(/^#{3,6}\s+/, "") });
-    } else if (/^[-*+]\s+/.test(trimmed)) {
-      blocks.push({ type: "bullet", text: trimmed.replace(/^[-*+]\s+/, "") });
-    } else {
-      blocks.push({ type: "paragraph", text: trimmed });
-    }
-  }
-  return blocks;
-}
-
 function paragraphsToBlocks(paragraphs?: StoredDocumentParagraph[]): FormatDocumentBlock[] {
   if (!paragraphs?.length) return [];
   return paragraphs
@@ -157,7 +139,7 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
   const activeDocument = sourceDocument
     ? {
         title: sourceDocument.title?.trim() || "无标题文档",
-        blocks: paragraphsToBlocks(sourceDocument.paragraphs).length ? paragraphsToBlocks(sourceDocument.paragraphs) : contentToBlocks(sourceDocument.content),
+        blocks: paragraphsToBlocks(sourceDocument.paragraphs),
       }
     : { title: "未选择文件", blocks: [] };
 
@@ -204,7 +186,7 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
   const startOrganizing = async () => {
     const organizeText = sourceDocument?.paragraphs?.length
       ? sourceDocument.paragraphs.filter((paragraph) => paragraph.type !== "title").map((paragraph) => paragraph.content).join("\n\n")
-      : sourceDocument?.content || "";
+      : "";
     if (!organizeText) {
       showMessage("请先选择文档");
       return;

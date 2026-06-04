@@ -182,7 +182,7 @@ def paragraph_to_rag_text(content: str, paragraph_type: str, level: int) -> str:
 
 def split_document_paragraph_chunks(document: DocumentDetail) -> list[tuple[str | None, int | None, str]]:
     if not document.paragraphs:
-        return [(None, None, chunk) for chunk in split_document_chunks(document.content)]
+        return []
 
     chunks: list[tuple[str | None, int | None, str]] = []
     current_heading = ""

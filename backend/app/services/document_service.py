@@ -183,7 +183,6 @@ def ensure_storage() -> None:
             )
             """
         )
-        migrate_legacy_document_paragraphs(conn)
         conn.commit()
 
 
@@ -192,38 +191,6 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def migrate_legacy_document_paragraphs(conn: sqlite3.Connection) -> None:
-    rows = conn.execute("SELECT * FROM documents ORDER BY last_saved_at ASC").fetchall()
-    for row in rows:
-        count = conn.execute("SELECT COUNT(*) AS count FROM document_paragraphs WHERE document_id = ?", (row["id"],)).fetchone()["count"]
-        if count:
-            continue
-        timestamp = row["last_saved_at"] or now_utc().isoformat()
-        paragraphs = markdown_to_paragraph_inputs(row["content"] or "", row["title"])
-        for index, paragraph in enumerate(paragraphs):
-            paragraph_id = uuid.uuid4().hex
-            paragraph_type = normalize_paragraph_type(paragraph.type)
-            level = normalize_paragraph_level(paragraph.level, paragraph_type)
-            conn.execute(
-                """
-                INSERT INTO document_paragraphs
-                (id, document_id, paragraph_index, type, level, content, content_hash, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    paragraph_id,
-                    row["id"],
-                    index,
-                    paragraph_type,
-                    level,
-                    paragraph.content,
-                    content_hash(paragraph.content),
-                    timestamp,
-                    timestamp,
-                ),
-            )
 
 
 def fetch_paragraphs(conn: sqlite3.Connection, document_id: str) -> list[DocumentParagraph]:
