@@ -1,4 +1,5 @@
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+// 生产构建时为空字符串（同源部署），开发时由 vite.config.ts 注入后端地址
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
 export type HealthResponse = {
   status: "ok";

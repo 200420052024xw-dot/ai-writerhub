@@ -22,6 +22,12 @@ class Settings(BaseSettings):
       alias="RAG_RERANK_MODEL_PATH",
     )
 
+    # CORS — 逗号分隔的允许来源，如 "https://example.com,https://admin.example.com"
+    cors_origins: str = Field(default="http://127.0.0.1:5173,http://localhost:5173", alias="CORS_ORIGINS")
+
+    # 前端静态文件目录（部署时设为前端 build 输出路径，如 "/opt/writerhub/frontend/dist"）
+    static_dir: str = Field(default="", alias="STATIC_DIR")
+
     # MySQL
     db_host: str = Field(default="localhost", alias="DB_HOST")
     db_port: int = Field(default=3306, alias="DB_PORT")
