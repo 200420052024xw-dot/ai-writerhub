@@ -1,23 +1,22 @@
-import json
-
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
 
 from app.schemas.translation import (
     ExtractTermsRequest,
     ExtractTermsResponse,
-    DocumentTranslationState,
-    DocumentTranslationStateSave,
-    TranslationRequest,
-    TranslationResponse,
+    TranslationGranularity,
+    TranslationJob,
+    TranslationJobCreate,
+    TranslationPreview,
+    TranslationWorkspace,
+    TranslationPair,
+    TranslationSourceParagraph,
 )
-from app.services.translation_service import (
-    extract_terms,
-    translate_structured_with_strategy,
-    translate_structured_with_strategy_stream,
-)
+from app.services.translation_service import extract_terms
 from app.services.llm_client import RuntimeModelConfig
-from app.services.translation_state_service import get_document_translation_state, save_document_translation_state
+from app.services.translation_state_service import list_translation_versions
+from app.services.translation_job_service import create_translation_job, get_translation_job, list_translation_jobs
+from app.services.document_service import get_document
+from app.services.translation_service import build_paragraph_units, build_sentence_units
 
 router = APIRouter()
 
@@ -30,72 +29,62 @@ def runtime_model_config(payload_config) -> RuntimeModelConfig:
     )
 
 
-@router.post("/translate", response_model=TranslationResponse)
-async def translate(payload: TranslationRequest) -> TranslationResponse:
-    if not payload.source_paragraphs:
-        raise HTTPException(status_code=400, detail="translation requires stored document paragraphs")
-    target_text, context_summary, used_context_summary, chunks = await translate_structured_with_strategy(
-        payload.source_paragraphs,
-        payload.direction,
-        payload.display_mode,
-        payload.options,
-        payload.glossary or None,
-        runtime_model_config(payload.ai_config),
-    )
-    source_text = "\n\n".join(paragraph.content for paragraph in payload.source_paragraphs if paragraph.content.strip())
-    paragraph_pairs = [pair for chunk in chunks for pair in chunk.paragraph_pairs]
-    sentence_pairs = [pair for chunk in chunks for pair in chunk.sentence_pairs]
-
-    return TranslationResponse(
-        source_text=source_text,
-        target_text=target_text,
-        direction=payload.direction,
-        display_mode=payload.display_mode,
-        context_summary=context_summary,
-        used_context_summary=used_context_summary,
-        chunk_count=len(chunks),
-        chunks=chunks,
-        paragraph_pairs=paragraph_pairs,
-        sentence_pairs=sentence_pairs,
-        applied_options=payload.options,
-    )
-
-
-@router.post("/translate/stream")
-async def translate_stream(payload: TranslationRequest) -> StreamingResponse:
-    async def event_stream():
-        try:
-            if not payload.source_paragraphs:
-                raise HTTPException(status_code=400, detail="translation requires stored document paragraphs")
-            stream = translate_structured_with_strategy_stream(
-                payload.source_paragraphs,
-                payload.direction,
-                payload.display_mode,
-                payload.options,
-                payload.glossary or None,
-                runtime_model_config(payload.ai_config),
-            )
-            async for event in stream:
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-        except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
 @router.post("/translate/extract-terms", response_model=ExtractTermsResponse)
 async def extract_terms_endpoint(payload: ExtractTermsRequest) -> ExtractTermsResponse:
     terms = await extract_terms(payload.source_text, payload.direction, runtime_model_config(payload.ai_config))
     return ExtractTermsResponse(terms=terms)
 
 
-@router.get("/documents/{document_id}/translation-state", response_model=DocumentTranslationState | None)
-async def document_translation_state(document_id: str) -> DocumentTranslationState | None:
-    return get_document_translation_state(document_id)
+@router.get("/documents/{document_id}/translation-workspace", response_model=TranslationWorkspace)
+async def translation_workspace(document_id: str) -> TranslationWorkspace:
+    return TranslationWorkspace(
+        versions=list_translation_versions(document_id),
+        jobs=list_translation_jobs(document_id),
+    )
 
 
-@router.put("/documents/{document_id}/translation-state", response_model=DocumentTranslationState)
-async def put_document_translation_state(document_id: str, payload: DocumentTranslationStateSave) -> DocumentTranslationState:
-    return save_document_translation_state(document_id, payload)
+@router.get("/translation-jobs", response_model=list[TranslationJob])
+async def active_translation_jobs() -> list[TranslationJob]:
+    return list_translation_jobs(active_only=True)
+
+
+@router.get("/translation-jobs/{job_id}", response_model=TranslationJob)
+async def translation_job(job_id: str) -> TranslationJob:
+    job = get_translation_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="translation job not found")
+    return job
+
+
+@router.post("/documents/{document_id}/translation-jobs", response_model=TranslationJob)
+async def start_translation_job(document_id: str, payload: TranslationJobCreate) -> TranslationJob:
+    return create_translation_job(document_id, payload)
+
+
+@router.get(
+    "/documents/{document_id}/translation-preview/{granularity}",
+    response_model=TranslationPreview,
+)
+async def translation_preview(
+    document_id: str,
+    granularity: TranslationGranularity,
+) -> TranslationPreview:
+    document = get_document(document_id)
+    paragraphs = [
+        TranslationSourceParagraph(id=item.id, type=item.type, level=item.level, content=item.content)
+        for item in document.paragraphs
+        if item.content.strip()
+    ]
+    units = build_sentence_units(paragraphs) if granularity == "sentence" else build_paragraph_units(paragraphs)
+    return TranslationPreview(
+        granularity=granularity,
+        pairs=[
+            TranslationPair(
+                source=unit["text"],
+                target="",
+                paragraph_id=unit["paragraph_id"],
+                sentence_index=unit.get("sentence_index"),
+            )
+            for unit in units
+        ],
+    )

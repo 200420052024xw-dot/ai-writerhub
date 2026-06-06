@@ -57,6 +57,12 @@ def normalize_paragraph_level(value: int, paragraph_type: str) -> int:
     return max(0, min(4, int(value or 0)))
 
 
+def detect_document_language(text: str) -> str:
+    chinese_count = len(re.findall(r"[\u3400-\u9fff]", text or ""))
+    latin_count = len(re.findall(r"[A-Za-z]", text or ""))
+    return "zh" if chinese_count >= max(1, latin_count * 0.2) else "en"
+
+
 def strip_page_comments(content: str) -> str:
     return "\n".join(line for line in content.replace("\r\n", "\n").split("\n") if not line.strip().startswith("<!-- 第"))
 
@@ -135,6 +141,7 @@ def ensure_storage() -> None:
                 content TEXT NOT NULL,
                 content_hash TEXT NOT NULL,
                 rag_status TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT 'zh',
                 last_saved_at TEXT NOT NULL,
                 last_indexed_at TEXT,
                 glossary_json TEXT NOT NULL DEFAULT '[]'
@@ -159,6 +166,16 @@ def ensure_storage() -> None:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
         if "glossary_json" not in columns:
             conn.execute("ALTER TABLE documents ADD COLUMN glossary_json TEXT NOT NULL DEFAULT '[]'")
+        if "language" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN language TEXT NOT NULL DEFAULT 'zh'")
+            rows = conn.execute("SELECT id, title, content FROM documents").fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE documents SET language = ? WHERE id = ?",
+                    (detect_document_language(f"{row['title']}\n{row['content']}"), row["id"]),
+                )
+        if "deleted_at" not in columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN deleted_at TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS knowledge_conversations (
@@ -299,8 +316,10 @@ def row_to_summary(row: sqlite3.Row) -> DocumentSummary:
         title=row["title"],
         content_hash=row["content_hash"],
         rag_status=row["rag_status"],
+        language=row["language"] if row["language"] in {"zh", "en"} else "zh",
         last_saved_at=datetime.fromisoformat(row["last_saved_at"]),
         last_indexed_at=datetime.fromisoformat(row["last_indexed_at"]) if row["last_indexed_at"] else None,
+        deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
     )
 
 
@@ -317,14 +336,17 @@ def row_to_detail(row: sqlite3.Row, paragraphs: list[DocumentParagraph] | None =
 def list_documents() -> list[DocumentSummary]:
     ensure_storage()
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM documents ORDER BY last_saved_at DESC").fetchall()
+        rows = conn.execute("SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY last_saved_at DESC").fetchall()
     return [row_to_summary(row) for row in rows]
 
 
-def get_document(document_id: str) -> DocumentDetail:
+def get_document(document_id: str, include_trashed: bool = False) -> DocumentDetail:
     ensure_storage()
     with connect() as conn:
-        row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        if include_trashed:
+            row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+        else:
+            row = conn.execute("SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL", (document_id,)).fetchone()
         paragraphs = fetch_paragraphs(conn, document_id) if row else []
     if not row:
         raise HTTPException(status_code=404, detail="document not found")
@@ -332,6 +354,7 @@ def get_document(document_id: str) -> DocumentDetail:
 
 
 def delete_document(document_id: str) -> None:
+    """Hard delete — removes document and all related data permanently."""
     ensure_storage()
     get_document(document_id)
     from app.services.rag_service import delete_document_index
@@ -342,6 +365,10 @@ def delete_document(document_id: str) -> None:
         conn.execute("DELETE FROM document_assistant_messages WHERE document_id = ?", (document_id,))
         if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_translation_states'").fetchone():
             conn.execute("DELETE FROM document_translation_states WHERE document_id = ?", (document_id,))
+        if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_translation_versions'").fetchone():
+            conn.execute("DELETE FROM document_translation_versions WHERE document_id = ?", (document_id,))
+        if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'translation_jobs'").fetchone():
+            conn.execute("DELETE FROM translation_jobs WHERE document_id = ?", (document_id,))
         conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
         conn.commit()
 
@@ -352,6 +379,74 @@ def delete_document(document_id: str) -> None:
         shutil.rmtree(work_dir)
 
 
+def trash_document(document_id: str) -> None:
+    """Soft delete — move document to trash by setting deleted_at."""
+    ensure_storage()
+    get_document(document_id)
+    from app.services.rag_service import delete_document_index
+
+    delete_document_index(document_id)
+    timestamp = now_utc().isoformat()
+    with connect() as conn:
+        conn.execute("UPDATE documents SET deleted_at = ?, rag_status = 'not_indexed' WHERE id = ?", (timestamp, document_id))
+        conn.commit()
+
+
+def restore_document(document_id: str) -> None:
+    """Restore a trashed document."""
+    ensure_storage()
+    get_document(document_id, include_trashed=True)
+    with connect() as conn:
+        row = conn.execute("SELECT deleted_at FROM documents WHERE id = ?", (document_id,)).fetchone()
+        if not row or not row["deleted_at"]:
+            raise HTTPException(status_code=400, detail="文档不在回收站中")
+        conn.execute("UPDATE documents SET deleted_at = NULL WHERE id = ?", (document_id,))
+        conn.commit()
+
+
+def permanent_delete_document(document_id: str) -> None:
+    """Permanently delete a trashed document."""
+    ensure_storage()
+    doc = get_document(document_id, include_trashed=True)
+    if not doc.deleted_at:
+        raise HTTPException(status_code=400, detail="文档不在回收站中，请使用普通删除")
+    delete_document(document_id)
+
+
+def list_trashed_documents() -> list[DocumentSummary]:
+    """List all documents in trash."""
+    ensure_storage()
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM documents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").fetchall()
+    return [row_to_summary(row) for row in rows]
+
+
+def purge_expired_trash(max_age_days: int = 15) -> int:
+    """Permanently delete trashed documents older than max_age_days. Returns count purged."""
+    ensure_storage()
+    from app.services.rag_service import delete_document_index
+
+    cutoff = datetime.now(UTC).timestamp() - max_age_days * 86400
+    with connect() as conn:
+        rows = conn.execute("SELECT id, deleted_at FROM documents WHERE deleted_at IS NOT NULL").fetchall()
+        expired_ids: list[str] = []
+        for row in rows:
+            try:
+                deleted_ts = datetime.fromisoformat(row["deleted_at"]).timestamp()
+                if deleted_ts < cutoff:
+                    expired_ids.append(row["id"])
+            except (ValueError, TypeError):
+                continue
+
+    for doc_id in expired_ids:
+        try:
+            delete_document_index(doc_id)
+            delete_document(doc_id)
+        except Exception:
+            continue
+    return len(expired_ids)
+
+
 def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
     ensure_storage()
     document_id = uuid.uuid4().hex
@@ -360,13 +455,15 @@ def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
     title = title_from_paragraphs(paragraphs, payload.title)
     content = paragraphs_to_markdown(paragraphs)
     glossary_json = json.dumps([entry.model_dump() for entry in payload.glossary], ensure_ascii=False)
+    language = payload.language or detect_document_language(f"{title}\n{content}")
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at, glossary_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents
+            (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None, glossary_json),
+            (document_id, title, content, content_hash(content), "not_indexed", language, timestamp, None, glossary_json),
         )
         replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
         conn.commit()
@@ -378,6 +475,7 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
     next_title = payload.title if payload.title is not None else current.title
     next_content = payload.content if payload.content is not None else current.content
     next_glossary = payload.glossary if payload.glossary is not None else current.glossary
+    next_language = payload.language if payload.language is not None else current.language
     if payload.content is not None:
         next_paragraphs = markdown_to_paragraph_inputs(next_content, next_title)
         next_title = title_from_paragraphs(next_paragraphs, next_title)
@@ -399,10 +497,19 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
         conn.execute(
             """
             UPDATE documents
-            SET title = ?, content = ?, content_hash = ?, rag_status = ?, last_saved_at = ?, glossary_json = ?
+            SET title = ?, content = ?, content_hash = ?, rag_status = ?, language = ?, last_saved_at = ?, glossary_json = ?
             WHERE id = ?
             """,
-            (next_title.strip() or "无标题文档", next_content, next_hash, next_status, timestamp, glossary_json, document_id),
+            (
+                next_title.strip() or "无标题文档",
+                next_content,
+                next_hash,
+                next_status,
+                next_language,
+                timestamp,
+                glossary_json,
+                document_id,
+            ),
         )
         if next_paragraphs is not None:
             replace_document_paragraphs(conn, document_id, next_paragraphs, timestamp)
@@ -624,14 +731,16 @@ async def upload_and_parse_document(file: UploadFile, model_config: RuntimeModel
     paragraphs = markdown_to_paragraph_inputs(content, title)
     title = title_from_paragraphs(paragraphs, title)
     content = paragraphs_to_markdown(paragraphs)
+    language = detect_document_language(f"{title}\n{content}")
     timestamp = now_utc().isoformat()
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO documents (id, title, content, content_hash, rag_status, last_saved_at, last_indexed_at, glossary_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents
+            (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (document_id, title, content, content_hash(content), "not_indexed", timestamp, None, "[]"),
+            (document_id, title, content, content_hash(content), "not_indexed", language, timestamp, None, "[]"),
         )
         replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
         conn.commit()

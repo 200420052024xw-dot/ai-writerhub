@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, ClipboardCheck, Copy, Download, Edit3, Languages, Loader2, Settings, Sparkles, Trash2, X } from "lucide-react";
+import { AlertCircle, Check, CheckCircle2, ClipboardCheck, Copy, Download, Edit3, Languages, Loader2, Settings, Sparkles, Trash2, X } from "lucide-react";
 import {
+  createTranslationJob,
   createStoredDocument,
   extractTerms,
-  getDocumentTranslationState,
-  saveDocumentTranslationState,
+  getTranslationPreview,
+  getTranslationWorkspace,
   saveStoredDocument,
   saveStoredDocumentParagraphs,
-  translateTextStream,
   type ExtractTermsResponse,
   type GlossaryEntry,
   type StoredDocumentParagraph,
@@ -15,11 +15,12 @@ import {
   type TranslationChunk,
   type TranslationDirection,
   type TranslationDisplayMode,
+  type TranslationGranularity,
+  type TranslationJob,
   type TranslationOptions,
   type TranslationPair,
-  type TranslationSourceParagraph,
   type TranslationStyle,
-  type TranslationStreamEvent,
+  type TranslationVersion,
 } from "../services/api";
 import { loadModelSettings } from "../services/modelSettings";
 
@@ -73,12 +74,15 @@ type TranslationResult = {
   paragraph_pairs: TranslationPair[];
   sentence_pairs: TranslationPair[];
   direction: TranslationDirection;
+  translationMode: "paragraph" | "sentence";
+  isStale: boolean;
 };
 
 type TranslatePageState = {
   sourceText: string;
   direction: TranslationDirection;
   displayMode: TranslationDisplayMode;
+  granularity: TranslationGranularity;
   options: TranslationOptions;
   result: TranslationResult | null;
   enableCustomRequirements: boolean;
@@ -106,18 +110,6 @@ function renderSourceText(document?: { title?: string; content: string; paragrap
   if (!title) return content;
   const firstLine = content.split("\n").find((line) => line.trim())?.trim();
   return firstLine === title ? content : `${title}\n\n${content}`;
-}
-
-function sourceParagraphsForTranslation(document?: { paragraphs?: StoredDocumentParagraph[] } | null): TranslationSourceParagraph[] | undefined {
-  const paragraphs = document?.paragraphs
-    ?.filter((paragraph) => paragraph.id && paragraph.content.trim())
-    .map((paragraph) => ({
-      id: paragraph.id,
-      type: paragraph.type,
-      level: paragraph.level,
-      content: paragraph.content,
-    }));
-  return paragraphs?.length ? paragraphs : undefined;
 }
 
 function inferParagraphInput(block: string, existing?: StoredDocumentParagraph): StoredDocumentParagraphInput {
@@ -148,6 +140,15 @@ function textToParagraphInputs(text: string, existingParagraphs: StoredDocumentP
 
   blocks.forEach((block, index) => {
     if (!block && blocks.length > 1) return;
+    if (index === 0 && existingTitle && block.trim() === existingTitle.content.trim()) {
+      titleInput = {
+        id: existingTitle.id,
+        type: "title",
+        level: 0,
+        content: block.trim(),
+      };
+      return;
+    }
     const inferred = inferParagraphInput(block, existingBody[bodyInputs.length]);
     if (inferred.type === "title" && titleInput === null) {
       titleInput = { ...inferred, id: existingTitle?.id };
@@ -162,17 +163,6 @@ function textToParagraphInputs(text: string, existingParagraphs: StoredDocumentP
   ];
 }
 
-function paragraphsForTranslation(paragraphs: StoredDocumentParagraph[]): TranslationSourceParagraph[] {
-  return paragraphs
-    .filter((paragraph) => paragraph.id && paragraph.content.trim())
-    .map((paragraph) => ({
-      id: paragraph.id,
-      type: paragraph.type,
-      level: paragraph.level,
-      content: paragraph.content,
-    }));
-}
-
 function splitParagraphsForDisplay(text: string): string[] {
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
@@ -180,13 +170,6 @@ function splitParagraphsForDisplay(text: string): string[] {
   if (paragraphs.length > 1) return paragraphs;
   const lines = normalized.split("\n").map((item) => item.trim()).filter(Boolean);
   return lines.length > 1 ? lines : paragraphs;
-}
-
-function splitSentencesForDisplay(text: string): string[] {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return [];
-  const matches = normalized.match(/[^。！？!?；;.]+[。！？!?；;.]?/g);
-  return (matches || [normalized]).map((item) => item.trim()).filter(Boolean);
 }
 
 function buildDisplayParagraphPairs(result: TranslationResult | null, sourceText: string): TranslationPair[] {
@@ -199,22 +182,6 @@ function buildDisplayParagraphPairs(result: TranslationResult | null, sourceText
     return sourceParagraphs.map((source, index) => ({ source, target: targetParagraphs[index] }));
   }
   return existingPairs.length > 0 ? existingPairs : [{ source: sourceText, target: result.target_text }];
-}
-
-function buildDisplaySentencePairs(paragraphPairs: TranslationPair[], result: TranslationResult | null): TranslationPair[] {
-  if (!result) return [];
-  if (result.sentence_pairs.length > 0) return result.sentence_pairs;
-  const pairs: TranslationPair[] = [];
-  paragraphPairs.forEach((pair) => {
-    const sourceSentences = splitSentencesForDisplay(pair.source);
-    const targetSentences = splitSentencesForDisplay(pair.target);
-    if (sourceSentences.length > 1 && sourceSentences.length === targetSentences.length) {
-      sourceSentences.forEach((source, index) => pairs.push({ source, target: targetSentences[index] }));
-      return;
-    }
-    pairs.push(pair);
-  });
-  return pairs;
 }
 
 function splitSentencesStable(text: string): string[] {
@@ -268,29 +235,18 @@ function buildDisplaySentencePairsSafe(paragraphPairs: TranslationPair[], result
   return existingPairs.length > paragraphPairs.length ? existingPairs : pairs;
 }
 
-function swapPairs(pairs: TranslationPair[]): TranslationPair[] {
-  return pairs.map((pair) => ({ ...pair, source: pair.target, target: pair.source }));
-}
-
-function swapTranslationResult(result: TranslationResult | null, previousSource: string, nextDirection: TranslationDirection): TranslationResult | null {
-  if (!result?.target_text) return null;
-  return {
-    ...result,
-    target_text: previousSource,
-    direction: nextDirection,
-    chunks: (result.chunks || []).map((chunk) => ({
-      ...chunk,
-      source: chunk.target,
-      target: chunk.source,
-      paragraph_pairs: swapPairs(chunk.paragraph_pairs || []),
-      sentence_pairs: swapPairs(chunk.sentence_pairs || []),
-    })),
-    paragraph_pairs: swapPairs(result.paragraph_pairs || []),
-    sentence_pairs: swapPairs(result.sentence_pairs || []),
-  };
-}
-
-export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: string; title?: string; content: string; paragraphs?: StoredDocumentParagraph[]; glossary?: GlossaryEntry[] } | null }) {
+export function TranslatePage({
+  sourceDocument,
+}: {
+  sourceDocument?: {
+    id?: string;
+    title?: string;
+    content: string;
+    language?: "zh" | "en";
+    paragraphs?: StoredDocumentParagraph[];
+    glossary?: GlossaryEntry[];
+  } | null;
+}) {
   const cachedState = useMemo(() => {
     try {
       return JSON.parse(localStorage.getItem(TRANSLATE_STATE_KEY) || "null") as TranslatePageState | null;
@@ -299,13 +255,28 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     }
   }, []);
   const [sourceText, setSourceText] = useState(() => cachedState?.sourceText ?? renderSourceText(sourceDocument));
-  const [direction, setDirection] = useState<TranslationDirection>(cachedState?.direction ?? "zh-en");
-  const [displayMode, setDisplayMode] = useState<TranslationDisplayMode>(cachedState?.displayMode ?? "split");
+  const [direction, setDirection] = useState<TranslationDirection>(
+    sourceDocument?.language === "en" ? "en-zh" : "zh-en",
+  );
+  const [documentLanguage, setDocumentLanguage] = useState<"zh" | "en">(sourceDocument?.language ?? "zh");
+  const [displayMode, setDisplayMode] = useState<TranslationDisplayMode>(
+    cachedState?.displayMode === "paragraph" ? "paragraph" : "split",
+  );
+  const [granularity, setGranularity] = useState<TranslationGranularity>(cachedState?.granularity ?? "paragraph");
   const [options, setOptions] = useState<TranslationOptions>(cachedState?.options ?? defaultOptions);
-  const [result, setResult] = useState<TranslationResult | null>(cachedState?.result ?? null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [result, setResult] = useState<TranslationResult | null>(() => {
+    if (!cachedState?.result) return null;
+    return {
+      ...cachedState.result,
+      translationMode: cachedState.result.translationMode
+        ?? (cachedState.displayMode === "sentence" ? "sentence" : "paragraph"),
+      isStale: cachedState.result.isStale ?? false,
+    };
+  });
   const [message, setMessage] = useState("");
-  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+  const [versions, setVersions] = useState<TranslationVersion[]>([]);
+  const [jobs, setJobs] = useState<TranslationJob[]>([]);
+  const [previewPairs, setPreviewPairs] = useState<TranslationPair[]>([]);
 
   const [glossary, setGlossary] = useState<GlossaryEntry[]>(() => sourceDocument?.glossary ?? loadGlossary());
   const [showGlossaryModal, setShowGlossaryModal] = useState(false);
@@ -316,6 +287,8 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   const [loadedTranslationDocumentId, setLoadedTranslationDocumentId] = useState<string | null>(null);
   const [documentParagraphs, setDocumentParagraphs] = useState<StoredDocumentParagraph[]>(() => sourceDocument?.paragraphs || []);
   const [sourceSaveState, setSourceSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [editingSource, setEditingSource] = useState(false);
+  const [saveRetry, setSaveRetry] = useState(0);
   const loadingSourceRef = useRef(false);
   const documentParagraphsRef = useRef<StoredDocumentParagraph[]>(sourceDocument?.paragraphs || []);
   const latestSavePromiseRef = useRef<Promise<void> | null>(null);
@@ -337,37 +310,24 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
         return;
       }
       loadingSourceRef.current = true;
+      const nextLanguage = sourceDocument.language ?? "zh";
+      setDocumentLanguage(nextLanguage);
+      setDirection(nextLanguage === "zh" ? "zh-en" : "en-zh");
       setGlossary(sourceDocument.glossary || []);
       setDocumentParagraphs(sourceDocument.paragraphs || []);
       documentParagraphsRef.current = sourceDocument.paragraphs || [];
       try {
-        const stored = await getDocumentTranslationState(sourceDocument.id);
+        const workspace = await getTranslationWorkspace(sourceDocument.id);
         if (cancelled) return;
-        if (stored) {
-          setSourceText(stored.source_text || renderSourceText(sourceDocument));
-          setDirection(stored.direction);
-          setDisplayMode(stored.display_mode);
-          setOptions(stored.options || defaultOptions);
-          setResult({
-            target_text: stored.target_text,
-            context_summary: stored.context_summary,
-            used_context_summary: stored.used_context_summary,
-            chunks: stored.chunks || [],
-            paragraph_pairs: stored.paragraph_pairs || [],
-            sentence_pairs: stored.sentence_pairs || [],
-            direction: stored.direction,
-          });
-        } else {
-          setSourceText(renderSourceText(sourceDocument));
-          setResult(null);
-          setDisplayMode("split");
-          setDirection("zh-en");
-        }
+        setSourceText(renderSourceText(sourceDocument));
+        setVersions(workspace.versions);
+        setJobs(workspace.jobs);
         setLoadedTranslationDocumentId(sourceDocument.id);
       } catch {
         if (cancelled) return;
         setSourceText(renderSourceText(sourceDocument));
-        setResult(null);
+        setVersions([]);
+        setJobs([]);
         setLoadedTranslationDocumentId(sourceDocument.id);
       } finally {
         window.setTimeout(() => {
@@ -382,43 +342,101 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   }, [sourceDocument?.id]);
 
   useEffect(() => {
-    localStorage.setItem(
-      TRANSLATE_STATE_KEY,
-      JSON.stringify({ sourceText, direction, displayMode, options, result, enableCustomRequirements, saveMode }),
+    const hasRequestedPairs = (version: TranslationVersion) => (
+      granularity === "sentence"
+        ? version.sentence_pairs.length > 0
+        : version.paragraph_pairs.length > 0
     );
-  }, [sourceText, direction, displayMode, options, result, enableCustomRequirements, saveMode]);
+    const exactVersion = versions.find(
+      (item) =>
+        item.direction === direction
+        && item.granularity === granularity
+        && hasRequestedPairs(item),
+    );
+    const version = exactVersion ?? versions.find(
+      (item) => item.direction === direction && hasRequestedPairs(item),
+    );
+    if (!version) {
+      setResult(null);
+      return;
+    }
+    setOptions(version.options || defaultOptions);
+    setResult({
+      target_text: version.target_text,
+      context_summary: version.context_summary,
+      used_context_summary: version.used_context_summary,
+      chunks: version.chunks,
+      paragraph_pairs: version.paragraph_pairs,
+      sentence_pairs: version.sentence_pairs,
+      direction: version.direction,
+      translationMode: version.granularity,
+      isStale: version.is_stale,
+    });
+  }, [versions, direction, granularity]);
 
   useEffect(() => {
-    if (!sourceDocument?.id || loadedTranslationDocumentId !== sourceDocument.id) return;
-    if (!result) return;
-    const timer = window.setTimeout(() => {
-      void saveDocumentTranslationState(sourceDocument.id!, {
-        source_text: sourceText,
-        target_text: result?.target_text || "",
-        direction,
-        display_mode: displayMode,
-        context_summary: result?.context_summary || "",
-        used_context_summary: result?.used_context_summary || false,
-        chunks: result?.chunks || [],
-        paragraph_pairs: result?.paragraph_pairs || [],
-        sentence_pairs: result?.sentence_pairs || [],
-        options,
+    if (!sourceDocument?.id) {
+      setPreviewPairs([]);
+      return;
+    }
+    let cancelled = false;
+    getTranslationPreview(sourceDocument.id, granularity)
+      .then((preview) => {
+        if (!cancelled) setPreviewPairs(preview.pairs);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewPairs([]);
       });
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [sourceDocument?.id, loadedTranslationDocumentId, sourceText, result, direction, displayMode, options]);
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceDocument?.id, granularity, documentParagraphs]);
+
+  useEffect(() => {
+    if (!sourceDocument?.id) return;
+    let cancelled = false;
+    const refreshWorkspace = async () => {
+      try {
+        const workspace = await getTranslationWorkspace(sourceDocument.id!);
+        if (cancelled) return;
+        setVersions(workspace.versions);
+        setJobs(workspace.jobs);
+      } catch {
+        // Keep the last successful workspace visible.
+      }
+    };
+    const timer = window.setInterval(refreshWorkspace, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [sourceDocument?.id]);
+
+  useEffect(() => {
+    localStorage.setItem(
+      TRANSLATE_STATE_KEY,
+      JSON.stringify({ sourceText, direction, displayMode, granularity, options, result, enableCustomRequirements, saveMode }),
+    );
+  }, [sourceText, direction, displayMode, granularity, options, result, enableCustomRequirements, saveMode]);
 
   useEffect(() => {
     if (!sourceDocument?.id || loadedTranslationDocumentId !== sourceDocument.id || loadingSourceRef.current) return;
     const timer = window.setTimeout(() => {
       const savePromise = saveStoredDocumentParagraphs(
         sourceDocument.id!,
-        textToParagraphInputs(sourceText, documentParagraphs),
+        textToParagraphInputs(sourceText, documentParagraphsRef.current),
       )
         .then((saved) => {
           documentParagraphsRef.current = saved.paragraphs;
           setDocumentParagraphs(saved.paragraphs);
           setSourceSaveState("saved");
+          if (sourceDocument.id) {
+            void getTranslationWorkspace(sourceDocument.id).then((workspace) => {
+              setVersions(workspace.versions);
+              setJobs(workspace.jobs);
+            });
+          }
+          window.setTimeout(() => setSourceSaveState("idle"), 1400);
         })
         .catch((error) => {
           setSourceSaveState("failed");
@@ -433,7 +451,7 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
       setSourceSaveState("saving");
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [sourceText, sourceDocument?.id, loadedTranslationDocumentId]);
+  }, [sourceText, sourceDocument?.id, loadedTranslationDocumentId, saveRetry]);
 
   useEffect(() => {
     if (!sourceDocument?.id) {
@@ -447,10 +465,9 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   }, [glossary, sourceDocument?.id]);
 
   const targetText = result?.target_text ?? "";
-  const sourceTitle = direction === "zh-en" ? "中文原文" : "English Source";
-  const targetTitle = direction === "zh-en" ? "English Translation" : "中文译文";
+  const sourceTitle = documentLanguage === "zh" ? "中文原文" : "English Source";
+  const targetTitle = documentLanguage === "zh" ? "English Translation" : "中文译文";
   const resultDirectionLabel = result?.direction === "zh-en" ? "中 → 英" : "英 → 中";
-  const currentDirectionLabel = direction === "zh-en" ? "中 → 英" : "英 → 中";
   const modelSettings = loadModelSettings();
   const aiConfig = {
     api_key: modelSettings.apiKey,
@@ -459,14 +476,37 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
   };
 
   const pairs: TranslationPair[] = useMemo(() => {
-    if (!result) return [];
-    const paragraphPairs = buildDisplayParagraphPairsSafe(result, sourceText);
-    if (displayMode === "sentence") return buildDisplaySentencePairsSafe(paragraphPairs, result);
-    return paragraphPairs;
-  }, [displayMode, result, sourceText]);
-  const emptyCompareTarget = result && displayMode === "sentence"
-    ? "句级结构未对齐，请切换到段落交替查看完整结果。"
-    : '点击"开始翻译"后，结果会显示在这里。';
+    const translated = granularity === "sentence" ? result?.sentence_pairs : result?.paragraph_pairs;
+    const translatedById = new Map(
+      (translated || []).map((pair) => [
+        `${pair.paragraph_id || ""}:${pair.sentence_index ?? ""}`,
+        pair,
+      ]),
+    );
+    return previewPairs.map((pair, index) => {
+      const key = `${pair.paragraph_id || ""}:${pair.sentence_index ?? ""}`;
+      const exact = translatedById.get(key);
+      if (exact) return exact;
+      const ordered = translated?.[index];
+      return ordered ? { ...pair, target: ordered.target } : pair;
+    });
+  }, [granularity, result, previewPairs]);
+
+  const isActiveJob = (job: TranslationJob) => (
+    job.status === "queued" || job.status === "running"
+  );
+  const activeJob = jobs.find(
+    (job) =>
+      job.direction === direction
+      && job.granularity === granularity
+      && isActiveJob(job),
+  ) ?? jobs.find(
+    (job) => job.direction === direction && isActiveJob(job),
+  );
+  const isLoading = Boolean(activeJob);
+  const progress = activeJob
+    ? { current: activeJob.completed_chunks, total: activeJob.total_chunks }
+    : null;
 
   const runTranslation = async () => {
     if (!sourceDocument?.id) {
@@ -480,90 +520,27 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
       return;
     }
 
-    setIsLoading(true);
     setMessage("");
-    setProgress(null);
-    setResult(null);
 
     try {
-      let totalChunks = 0;
-      const chunks: TranslationChunk[] = [];
-      const paragraphPairs: TranslationPair[] = [];
-      const sentencePairs: TranslationPair[] = [];
-      let contextSummary = "";
-      let usedContext = false;
       if (latestSavePromiseRef.current) {
         await latestSavePromiseRef.current;
       }
-      const structuredParagraphs = paragraphsForTranslation(documentParagraphsRef.current);
-      if (structuredParagraphs.length === 0) {
+      if (documentParagraphsRef.current.every((paragraph) => !paragraph.content.trim())) {
         setMessage("当前文件没有可翻译的段落");
         return;
       }
 
-      await translateTextStream(
-        {
-          source_text: sourceText,
-          source_paragraphs: structuredParagraphs,
-          direction,
-          display_mode: displayMode,
-          options,
-          glossary: glossary.length > 0 ? glossary : undefined,
-          ai_config: aiConfig,
-        },
-        (event: TranslationStreamEvent) => {
-          switch (event.type) {
-            case "start":
-              totalChunks = event.total_chunks;
-              usedContext = event.used_context;
-              setProgress({ current: 0, total: totalChunks });
-              break;
-            case "context_summary":
-              contextSummary = event.summary;
-              break;
-            case "chunk":
-              chunks.push({
-                index: event.index,
-                source: event.source,
-                target: event.target,
-                paragraph_pairs: event.paragraph_pairs || [],
-                sentence_pairs: event.sentence_pairs || [],
-              });
-              paragraphPairs.push(...(event.paragraph_pairs || []));
-              sentencePairs.push(...(event.sentence_pairs || []));
-              setProgress({ current: chunks.length, total: totalChunks });
-              setResult({
-                target_text: chunks.map((c) => c.target).join("\n\n"),
-                context_summary: contextSummary,
-                used_context_summary: usedContext,
-                chunks: [...chunks],
-                paragraph_pairs: [...paragraphPairs],
-                sentence_pairs: [...sentencePairs],
-                direction,
-              });
-              break;
-            case "complete":
-              setResult({
-                target_text: event.target_text,
-                context_summary: event.context_summary,
-                used_context_summary: usedContext,
-                chunks: event.chunks,
-                paragraph_pairs: event.paragraph_pairs || event.chunks.flatMap((chunk) => chunk.paragraph_pairs),
-                sentence_pairs: event.sentence_pairs || event.chunks.flatMap((chunk) => chunk.sentence_pairs),
-                direction,
-              });
-              break;
-            case "error":
-              setMessage(event.message);
-              break;
-          }
-        },
-      );
+      const job = await createTranslationJob(sourceDocument.id, {
+        direction,
+        granularity,
+        options,
+        glossary: glossary.length > 0 ? glossary : undefined,
+        ai_config: aiConfig,
+      });
+      setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     } catch {
       setMessage("翻译失败，请检查后端服务或模型配置");
-    } finally {
-      setIsLoading(false);
-      setProgress(null);
       window.setTimeout(() => setMessage(""), 2200);
     }
   };
@@ -573,15 +550,6 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     await navigator.clipboard.writeText(targetText);
     setMessage("译文已复制");
     window.setTimeout(() => setMessage(""), 1600);
-  };
-
-  const switchDirection = (nextDirection: TranslationDirection) => {
-    if (nextDirection !== direction && result?.target_text) {
-      const previousSource = sourceText;
-      setSourceText(result.target_text);
-      setResult(swapTranslationResult(result, previousSource, nextDirection));
-    }
-    setDirection(nextDirection);
   };
 
   const formatPair = (pair: TranslationPair, mode: TranslationSaveMode) => {
@@ -611,9 +579,10 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     try {
       const baseTitle = sourceDocument?.title?.trim() || "未命名文档";
       await createStoredDocument({
-        title: `${baseTitle} - 翻译结果`,
+        title: `${baseTitle}_翻译_${saveModeFileNames[saveMode]}`,
         content,
         glossary,
+        language: documentLanguage === "zh" ? "en" : "zh",
       });
       setMessage("翻译结果已保存到首页");
       setShowSaveMenu(false);
@@ -699,31 +668,39 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
     "sentence-source-target": "逐句：原文（译文）",
     "sentence-target-source": "逐句：译文（原文）",
   };
+  const saveModeFileNames: Record<TranslationSaveMode, string> = {
+    "target-only": "仅译文",
+    "paragraph-source-target": "分段原文译文",
+    "paragraph-target-source": "分段译文原文",
+    "sentence-source-target": "逐句原文译文",
+    "sentence-target-source": "逐句译文原文",
+  };
 
   return (
     <section className="page translate-page">
       <div className="mode-bar">
+        <div className="translation-direction-lock">
+          <span className={`document-language-badge ${documentLanguage}`}>{documentLanguage === "zh" ? "中文" : "英文"}</span>
+          <strong>{direction === "zh-en" ? "中译英" : "英译中"}</strong>
+        </div>
         <div className="segmented">
-          <button className={direction === "zh-en" ? "selected" : ""} onClick={() => switchDirection("zh-en")} type="button">
-            中 → 英
+          <button className={granularity === "paragraph" ? "selected" : ""} onClick={() => setGranularity("paragraph")} type="button">
+            段段翻译
           </button>
-          <button className={direction === "en-zh" ? "selected" : ""} onClick={() => switchDirection("en-zh")} type="button">
-            英 → 中
+          <button className={granularity === "sentence" ? "selected" : ""} onClick={() => setGranularity("sentence")} type="button">
+            句句翻译
           </button>
         </div>
         <button className="primary-action" disabled={isLoading} onClick={runTranslation} type="button">
           {isLoading ? <Loader2 className="spin" size={18} /> : <Languages size={18} />}
-          {isLoading ? "翻译中" : "开始翻译"}
+          {isLoading && progress ? `翻译中 ${progress.current}/${Math.max(progress.total, 1)}` : "开始翻译"}
         </button>
         <div className="segmented">
           <button className={displayMode === "split" ? "selected" : ""} onClick={() => setDisplayMode("split")} type="button">
             分屏对照
           </button>
           <button className={displayMode === "paragraph" ? "selected" : ""} onClick={() => setDisplayMode("paragraph")} type="button">
-            段落交替
-          </button>
-          <button className={displayMode === "sentence" ? "selected" : ""} onClick={() => setDisplayMode("sentence")} type="button">
-            句对句对照
+            交替对照
           </button>
         </div>
       </div>
@@ -736,23 +713,40 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
             <article className="panel text-panel">
               <div className="panel-header">
                 <h2>{sourceTitle}</h2>
-                <span>{sourceText.length} 字符</span>
+                <div className="translation-header-actions">
+                  <span className={`document-language-badge ${documentLanguage}`}>{documentLanguage === "zh" ? "中文" : "英文"}</span>
+                  {sourceSaveState === "saving" && <span className="source-save-indicator"><Loader2 className="spin" size={14} />保存中</span>}
+                  {sourceSaveState === "saved" && <span className="source-save-indicator saved"><CheckCircle2 size={14} />已保存</span>}
+                  {sourceSaveState === "failed" && (
+                    <button className="source-save-indicator failed" onClick={() => setSaveRetry((value) => value + 1)} type="button">
+                      <AlertCircle size={14} />保存失败，重试
+                    </button>
+                  )}
+                  <button className="inline-action" onClick={() => setEditingSource((current) => !current)} type="button">
+                    <Edit3 size={15} />
+                    {editingSource ? "完成" : "编辑"}
+                  </button>
+                </div>
               </div>
-              <div className={`translation-sync-note ${sourceSaveState}`}>
-                修改原文会自动同步更新当前文件
-                {sourceSaveState === "saving" && "，保存中..."}
-                {sourceSaveState === "saved" && "，已保存"}
-                {sourceSaveState === "failed" && "，保存失败"}
-              </div>
-              <textarea
-                className="translation-input"
-                onChange={(event) => {
-                  setSourceText(event.target.value);
-                  setResult(null);
-                  setSourceSaveState("idle");
-                }}
-                value={sourceText}
-              />
+              {editingSource ? (
+                <textarea
+                  className="translation-input"
+                  onChange={(event) => {
+                    setSourceText(event.target.value);
+                    setSourceSaveState("idle");
+                  }}
+                  value={sourceText}
+                />
+              ) : (
+                <div className="translation-unit-list">
+                  {pairs.map((pair, index) => (
+                    <div className="translation-unit" key={`source-${pair.paragraph_id}-${pair.sentence_index ?? index}`}>
+                      <span>{granularity === "sentence" ? `句 ${index + 1}` : `段 ${index + 1}`}</span>
+                      <p>{pair.source}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </article>
 
             <article className="panel text-panel">
@@ -760,30 +754,32 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
                 <h2>{targetTitle}</h2>
                 <div className="translation-header-actions">
                   {result && <span className="translation-result-direction">结果：{resultDirectionLabel}</span>}
-                  {result && result.direction !== direction && <span className="translation-result-stale">当前选择：{currentDirectionLabel}</span>}
+                  {result?.isStale && <span className="translation-result-stale">原文已更新</span>}
                   <button className="inline-action" onClick={copyTranslation} type="button">
                     <Copy size={15} />
                     复制
                   </button>
                 </div>
               </div>
-              <div className="text-body translation-output">
-                {isLoading && progress && !targetText && (
-                  <span className="translation-progress">翻译中 ({progress.current}/{progress.total} 块)...</span>
-                )}
-                {targetText || (!isLoading && '点击"开始翻译"后，译文会显示在这里。')}
+              <div className="translation-unit-list">
+                {pairs.map((pair, index) => (
+                  <div className="translation-unit" key={`target-${pair.paragraph_id}-${pair.sentence_index ?? index}`}>
+                    <span>{granularity === "sentence" ? `句 ${index + 1}` : `段 ${index + 1}`}</span>
+                    <p className={!pair.target ? "translation-placeholder" : ""}>{pair.target || (isLoading ? "等待翻译..." : "尚未翻译")}</p>
+                  </div>
+                ))}
               </div>
             </article>
           </>
         )}
 
-        {displayMode !== "split" && (
+        {displayMode === "paragraph" && (
           <article className="panel compare-panel">
             <div className="panel-header">
-              <h2>{displayMode === "paragraph" ? "段落交替" : "句对句对照"}</h2>
+              <h2>{granularity === "paragraph" ? "段段翻译" : "句句翻译"}</h2>
               <div className="translation-header-actions">
                 {result && <span className="translation-result-direction">结果：{resultDirectionLabel}</span>}
-                {result && result.direction !== direction && <span className="translation-result-stale">当前选择：{currentDirectionLabel}</span>}
+                {result?.isStale && <span className="translation-result-stale">原文已更新</span>}
                 <button className="inline-action" onClick={copyTranslation} type="button">
                   <Copy size={15} />
                   复制译文
@@ -791,7 +787,7 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
               </div>
             </div>
             <div className="compare-list">
-              {(pairs.length ? pairs : [{ source: sourceText, target: emptyCompareTarget }]).map((pair, index) => (
+              {pairs.map((pair, index) => (
                 <div className="compare-row" key={`${pair.source}-${index}`}>
                   <div>
                     <span>原文 {index + 1}</span>
@@ -799,7 +795,7 @@ export function TranslatePage({ sourceDocument }: { sourceDocument?: { id?: stri
                   </div>
                   <div>
                     <span>译文 {index + 1}</span>
-                    <p>{pair.target}</p>
+                    <p className={!pair.target ? "translation-placeholder" : ""}>{pair.target || (isLoading ? "等待翻译..." : "尚未翻译")}</p>
                   </div>
                 </div>
               ))}

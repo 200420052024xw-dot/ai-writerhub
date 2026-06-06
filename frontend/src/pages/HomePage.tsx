@@ -14,11 +14,13 @@ import {
   ScanSearch,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import {
   createStoredDocument,
   deleteStoredDocument,
   getStoredDocument,
+  indexStoredDocument,
   listStoredDocuments,
   uploadStoredDocument,
   type StoredDocumentDetail,
@@ -95,10 +97,12 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   const [message, setMessage] = useState("");
   const [menuDocumentId, setMenuDocumentId] = useState<string | null>(null);
   const [exportDocumentId, setExportDocumentId] = useState<string | null>(null);
-  const [showParseModal, setShowParseModal] = useState(false);
+  const [showParseModal, setShowParseModal] = useState<string | null>(null);
+  const [indexingId, setIndexingId] = useState<string | null>(null);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
+  const [showTrashConfirmId, setShowTrashConfirmId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recentDocument = documents[0];
   const parsedCount = documents.filter((document) => parseStatus(document) === "parsed").length;
@@ -218,9 +222,29 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
       window.dispatchEvent(new CustomEvent("writerhub:document-deleted", { detail: { documentId } }));
       setMenuDocumentId(null);
       await refresh();
-      showMessage("文档已删除");
+      showMessage("已移至回收站");
     } catch {
       showMessage("删除文档失败");
+    }
+  };
+
+  const handleParse = async (documentId: string) => {
+    setShowParseModal(null);
+    setIndexingId(documentId);
+    setDocuments((current) =>
+      current.map((doc) => (doc.id === documentId ? { ...doc, rag_status: "indexing" as const } : doc)),
+    );
+    try {
+      await indexStoredDocument(documentId);
+      await refresh();
+      showMessage("解析完成");
+    } catch {
+      setDocuments((current) =>
+        current.map((doc) => (doc.id === documentId ? { ...doc, rag_status: "failed" as const } : doc)),
+      );
+      showMessage("解析失败");
+    } finally {
+      setIndexingId(null);
     }
   };
 
@@ -260,12 +284,34 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     <section className="page home-page">
       {message && <div className="copy-toast failed">{message}</div>}
       {showParseModal && (
-        <div className="home-modal-backdrop" onMouseDown={() => setShowParseModal(false)}>
-          <div className="home-parse-modal" onMouseDown={(event) => event.stopPropagation()}>
-            <h3>解析策略</h3>
-            <p>文档会先转换为图片页，再使用设置页配置的视觉模型识别内容。</p>
-            <p>解析结果将用于文本提取、清洗、分段切块、向量化并写入知识库索引，供后续文档问答使用。</p>
-            <button className="primary-action" onClick={() => setShowParseModal(false)} type="button">知道了</button>
+        <div className="modal-overlay" onClick={() => setShowParseModal(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>文档解析</h3>
+              <button className="modal-close" onClick={() => setShowParseModal(null)} type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="parse-modal-icon">
+                <ScanSearch size={36} />
+              </div>
+              <div className="parse-steps">
+                <div className="parse-step"><span className="parse-step-num">1</span>文档转换为图片页</div>
+                <div className="parse-step"><span className="parse-step-num">2</span>视觉模型识别内容</div>
+                <div className="parse-step"><span className="parse-step-num">3</span>文本清洗与分段切块</div>
+                <div className="parse-step"><span className="parse-step-num">4</span>向量化写入知识库</div>
+              </div>
+              <p className="modal-hint">解析完成后可在知识库页面进行文档问答。</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setShowParseModal(null)} type="button">
+                取消
+              </button>
+              <button className="btn-primary" onClick={() => void handleParse(showParseModal)} type="button">
+                开始解析
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -429,6 +475,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                   <span className="home-file-badge text">DOC</span>
                   <span>
                     <strong>{document.title}</strong>
+                    <small className={`document-language-badge compact ${document.language}`}>{document.language === "zh" ? "中文" : "英文"}</small>
                   </span>
                 </button>
                 <span className={`parse-status ${parseStatus(document)}`}>{statusLabel(parseStatus(document))}</span>
@@ -476,11 +523,11 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                     </button>
                     {menuDocumentId === document.id && (
                       <div className="home-more-popover" onClick={(event) => event.stopPropagation()}>
-                        {parseStatus(document) !== "parsed" && (
+                        {parseStatus(document) !== "parsed" && parseStatus(document) !== "indexing" && (
                           <button
                             onClick={() => {
                               setMenuDocumentId(null);
-                              setShowParseModal(true);
+                              setShowParseModal(document.id);
                             }}
                             type="button"
                           >
@@ -492,7 +539,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                           className="danger"
                           onClick={() => {
                             setMenuDocumentId(null);
-                            void deleteDocument(document.id);
+                            setShowTrashConfirmId(document.id);
                           }}
                           type="button"
                         >
@@ -508,6 +555,38 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
           )}
         </div>
       </div>
+
+      {showTrashConfirmId && (
+        <div className="modal-overlay" onClick={() => setShowTrashConfirmId(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>确认删除</h3>
+              <button className="modal-close" onClick={() => setShowTrashConfirmId(null)} type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>确定要将该文档移至回收站吗？</p>
+              <p className="modal-hint">文档将在回收站中保留 15 天，之后自动清除。</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setShowTrashConfirmId(null)} type="button">
+                取消
+              </button>
+              <button
+                className="btn-danger"
+                onClick={() => {
+                  void deleteDocument(showTrashConfirmId);
+                  setShowTrashConfirmId(null);
+                }}
+                type="button"
+              >
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

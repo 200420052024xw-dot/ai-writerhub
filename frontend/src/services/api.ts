@@ -40,6 +40,8 @@ export async function detectMarkdown(content: string): Promise<MarkdownDetectRes
 
 export type TranslationDirection = "zh-en" | "en-zh";
 export type TranslationDisplayMode = "split" | "paragraph" | "sentence";
+export type TranslationGranularity = "paragraph" | "sentence";
+export type TranslationJobStatus = "queued" | "running" | "completed" | "failed" | "interrupted";
 export type TranslationStyle = "default" | "academic" | "business" | "natural";
 
 export type GlossaryEntry = {
@@ -82,115 +84,42 @@ export type TranslationChunk = {
   sentence_pairs: TranslationPair[];
 };
 
-export type TranslationResponse = {
-  source_text: string;
-  target_text: string;
-  direction: TranslationDirection;
-  display_mode: TranslationDisplayMode;
-  context_summary: string;
-  used_context_summary: boolean;
-  chunk_count: number;
-  chunks: TranslationChunk[];
-  paragraph_pairs: TranslationPair[];
-  sentence_pairs: TranslationPair[];
-  applied_options: TranslationOptions;
-};
-
-export type DocumentTranslationState = {
+export type TranslationVersion = {
   document_id: string;
-  source_text: string;
-  target_text: string;
   direction: TranslationDirection;
-  display_mode: TranslationDisplayMode;
+  granularity: TranslationGranularity;
+  source_text: string;
+  source_hash: string;
+  current_source_hash: string;
+  is_stale: boolean;
+  target_text: string;
   context_summary: string;
   used_context_summary: boolean;
   chunks: TranslationChunk[];
   paragraph_pairs: TranslationPair[];
   sentence_pairs: TranslationPair[];
   options: TranslationOptions;
-  updated_at: string | null;
+  updated_at: string;
 };
 
-export async function translateText(payload: {
-  source_text: string;
-  source_paragraphs: TranslationSourceParagraph[];
+export type TranslationJob = {
+  id: string;
+  document_id: string;
   direction: TranslationDirection;
-  display_mode: TranslationDisplayMode;
-  options: TranslationOptions;
-  glossary?: GlossaryEntry[];
-  ai_config: AIModelConfig;
-}): Promise<TranslationResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/translate`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+  granularity: TranslationGranularity;
+  status: TranslationJobStatus;
+  total_chunks: number;
+  completed_chunks: number;
+  error: string;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+};
 
-  if (!response.ok) {
-    throw new Error("Translation failed");
-  }
-
-  return response.json();
-}
-
-export type TranslationStreamEvent =
-  | { type: "start"; total_chunks: number; used_context: boolean }
-  | { type: "context_summary"; summary: string }
-  | { type: "chunk"; index: number; source: string; target: string; paragraph_pairs?: TranslationPair[]; sentence_pairs?: TranslationPair[] }
-  | { type: "complete"; target_text: string; context_summary: string; chunks: TranslationChunk[]; paragraph_pairs?: TranslationPair[]; sentence_pairs?: TranslationPair[] }
-  | { type: "error"; message: string };
-
-export async function translateTextStream(
-  payload: {
-    source_text: string;
-    source_paragraphs: TranslationSourceParagraph[];
-    direction: TranslationDirection;
-    display_mode: TranslationDisplayMode;
-    options: TranslationOptions;
-    glossary?: GlossaryEntry[];
-    ai_config: AIModelConfig;
-  },
-  onEvent: (event: TranslationStreamEvent) => void,
-): Promise<void> {
-  const response = await fetch(`${API_BASE_URL}/api/translate/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error("Translation stream failed");
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const data = trimmed.slice(5).trim();
-      if (!data || data === "[DONE]") continue;
-
-      try {
-        const parsed = JSON.parse(data) as TranslationStreamEvent;
-        onEvent(parsed);
-      } catch {
-        // ignore malformed events
-      }
-    }
-  }
-}
+export type TranslationWorkspace = {
+  versions: TranslationVersion[];
+  jobs: TranslationJob[];
+};
 
 export type ExtractTermsResponse = {
   terms: GlossaryEntry[];
@@ -216,26 +145,43 @@ export async function extractTerms(payload: {
   return response.json();
 }
 
-export async function getDocumentTranslationState(documentId: string): Promise<DocumentTranslationState | null> {
-  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-state`);
-  if (!response.ok) {
-    throw new Error(await response.text() || "Translation state load failed");
-  }
+export async function getTranslationWorkspace(documentId: string): Promise<TranslationWorkspace> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-workspace`);
+  if (!response.ok) throw new Error(await response.text() || "Translation workspace load failed");
   return response.json();
 }
 
-export async function saveDocumentTranslationState(
+export async function getActiveTranslationJobs(): Promise<TranslationJob[]> {
+  const response = await fetch(`${API_BASE_URL}/api/translation-jobs`);
+  if (!response.ok) throw new Error(await response.text() || "Translation jobs load failed");
+  return response.json();
+}
+
+export async function createTranslationJob(
   documentId: string,
-  payload: Omit<DocumentTranslationState, "document_id" | "updated_at">,
-): Promise<DocumentTranslationState> {
-  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-state`, {
-    method: "PUT",
+  payload: {
+    direction: TranslationDirection;
+    granularity: TranslationGranularity;
+    options: TranslationOptions;
+    glossary?: GlossaryEntry[];
+    ai_config: AIModelConfig;
+  },
+): Promise<TranslationJob> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-jobs`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (!response.ok) {
-    throw new Error(await response.text() || "Translation state save failed");
-  }
+  if (!response.ok) throw new Error(await response.text() || "Translation job creation failed");
+  return response.json();
+}
+
+export async function getTranslationPreview(
+  documentId: string,
+  granularity: TranslationGranularity,
+): Promise<{ granularity: TranslationGranularity; pairs: TranslationPair[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-preview/${granularity}`);
+  if (!response.ok) throw new Error(await response.text() || "Translation preview load failed");
   return response.json();
 }
 
@@ -253,9 +199,11 @@ export type FormatConfig = {
   extraRequirements: string;
 };
 
-export type FormatDocumentBlock = {
-  type: "heading1" | "heading2" | "paragraph" | "bullet";
-  text: string;
+export type FormatDocumentParagraph = {
+  paragraph_id: string;
+  type: "title" | "heading" | "paragraph" | "list" | "table";
+  level: number;
+  content: string;
 };
 
 export async function parseFormatPrompt(payload: {
@@ -283,7 +231,7 @@ export async function parseFormatPrompt(payload: {
 
 export async function exportFormatDocx(payload: {
   title: string;
-  blocks: FormatDocumentBlock[];
+  paragraphs: FormatDocumentParagraph[];
   config: FormatConfig;
 }): Promise<Blob> {
   const response = await fetch(`${API_BASE_URL}/api/format/export/docx`, {
@@ -302,12 +250,12 @@ export async function exportFormatDocx(payload: {
 }
 
 export async function organizeFormat(payload: {
-  text: string;
+  paragraphs: FormatDocumentParagraph[];
   config: FormatConfig;
   api_key: string;
   base_url: string;
   model: string;
-}): Promise<{ blocks: FormatDocumentBlock[] }> {
+}): Promise<{ paragraphs: FormatDocumentParagraph[] }> {
   const response = await fetch(`${API_BASE_URL}/api/format/organize`, {
     method: "POST",
     headers: {
@@ -354,6 +302,7 @@ export type StoredDocumentSummary = {
   title: string;
   content_hash: string;
   rag_status: "not_indexed" | "indexed" | "outdated" | "indexing" | "failed";
+  language: "zh" | "en";
   last_saved_at: string;
   last_indexed_at: string | null;
 };
@@ -403,6 +352,7 @@ export async function createStoredDocument(payload: {
   title: string;
   content?: string;
   glossary?: GlossaryEntry[];
+  language?: "zh" | "en";
 }): Promise<StoredDocumentDetail> {
   const response = await fetch(`${API_BASE_URL}/api/documents/new`, {
     method: "POST",
@@ -421,6 +371,7 @@ export async function saveStoredDocument(
     title?: string;
     content?: string;
     glossary?: GlossaryEntry[];
+    language?: "zh" | "en";
   },
 ): Promise<StoredDocumentDetail> {
   const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}`, {
@@ -631,6 +582,36 @@ export async function deleteStoredDocument(documentId: string): Promise<void> {
   if (!response.ok) {
     throw new Error("Document delete failed");
   }
+}
+
+export type TrashedDocument = StoredDocumentSummary & { deleted_at: string | null };
+
+export async function listTrashedDocuments(): Promise<{ documents: TrashedDocument[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/trash`);
+  if (!response.ok) throw new Error("Failed to list trash");
+  return response.json();
+}
+
+export async function restoreDocument(documentId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/restore`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error("Restore failed");
+}
+
+export async function permanentDeleteDocument(documentId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/permanent`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error("Permanent delete failed");
+}
+
+export async function purgeTrash(): Promise<{ purged: number }> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/trash/purge`, {
+    method: "POST",
+  });
+  if (!response.ok) throw new Error("Purge failed");
+  return response.json();
 }
 
 export async function uploadStoredDocument(payload: {

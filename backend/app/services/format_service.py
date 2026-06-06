@@ -7,7 +7,7 @@ from docx.shared import Cm, Pt
 from fastapi import HTTPException
 
 from app.prompts.format import FORMAT_CONFIG_FIELDS, build_format_organize_prompts, build_format_parse_prompts
-from app.schemas.format import DocumentBlock, FormatConfig, FormatExportDocxRequest, FormatOrganizeResponse
+from app.schemas.format import FormatConfig, FormatDocumentParagraph, FormatExportDocxRequest, FormatOrganizeResponse
 from app.services.llm_client import RuntimeModelConfig, call_chat_model
 
 
@@ -211,20 +211,19 @@ def apply_paragraph_style(paragraph, config: FormatConfig) -> None:
         paragraph.paragraph_format.first_line_indent = Cm(0.74)
 
 
-def add_block(document: Document, block: DocumentBlock, config: FormatConfig) -> None:
-    if block.type == "heading1":
-        paragraph = document.add_heading(block.text, level=1)
+def add_paragraph(document: Document, block: FormatDocumentParagraph, config: FormatConfig) -> None:
+    if block.type == "title":
+        return
+    if block.type == "heading":
+        paragraph = document.add_heading(block.content, level=max(1, min(4, block.level)))
         bold = True
-    elif block.type == "heading2":
-        paragraph = document.add_heading(block.text, level=2)
-        bold = True
-    elif block.type == "bullet":
+    elif block.type == "list":
         paragraph = document.add_paragraph(style="List Bullet")
-        paragraph.add_run(block.text)
+        paragraph.add_run(block.content)
         bold = False
     else:
         paragraph = document.add_paragraph()
-        paragraph.add_run(block.text)
+        paragraph.add_run(block.content)
         bold = False
 
     apply_paragraph_style(paragraph, config)
@@ -232,8 +231,15 @@ def add_block(document: Document, block: DocumentBlock, config: FormatConfig) ->
         apply_run_style(run, config, bold=bold)
 
 
-async def organize_document(text: str, config: FormatConfig, model_config: RuntimeModelConfig) -> FormatOrganizeResponse:
-    system_prompt, user_prompt = build_format_organize_prompts(text, config.model_dump())
+async def organize_document(
+    paragraphs: list[FormatDocumentParagraph],
+    config: FormatConfig,
+    model_config: RuntimeModelConfig,
+) -> FormatOrganizeResponse:
+    system_prompt, user_prompt = build_format_organize_prompts(
+        [paragraph.model_dump() for paragraph in paragraphs],
+        config.model_dump(),
+    )
     raw = await call_chat_model(system_prompt, user_prompt, model_config)
     content = raw.strip()
     if content.startswith("```"):
@@ -243,22 +249,26 @@ async def organize_document(text: str, config: FormatConfig, model_config: Runti
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=502, detail="模型未返回有效 JSON") from exc
 
-    blocks_data = parsed.get("blocks", [])
-    if not isinstance(blocks_data, list):
-        raise HTTPException(status_code=502, detail="模型返回格式错误：缺少 blocks 数组")
+    paragraph_data = parsed.get("paragraphs", [])
+    if not isinstance(paragraph_data, list):
+        raise HTTPException(status_code=502, detail="Model response is missing the paragraphs array")
+    try:
+        organized = [FormatDocumentParagraph(**item) for item in paragraph_data]
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="Model returned invalid structured paragraphs") from exc
 
-    blocks: list[DocumentBlock] = []
-    valid_types = {"heading1", "heading2", "paragraph", "bullet"}
-    for item in blocks_data:
-        if isinstance(item, dict) and item.get("type") in valid_types and isinstance(item.get("text"), str):
-            text_val = item["text"].strip()
-            if text_val:
-                blocks.append(DocumentBlock(type=item["type"], text=text_val))
-
-    if not blocks:
-        raise HTTPException(status_code=502, detail="模型未返回有效的文档块")
-
-    return FormatOrganizeResponse(blocks=blocks)
+    expected_ids = [paragraph.paragraph_id for paragraph in paragraphs]
+    returned_ids = [paragraph.paragraph_id for paragraph in organized]
+    if returned_ids != expected_ids:
+        raise HTTPException(status_code=502, detail="Model changed paragraph IDs or paragraph order")
+    if len(set(returned_ids)) != len(returned_ids):
+        raise HTTPException(status_code=502, detail="Model returned duplicate paragraph IDs")
+    for paragraph in organized:
+        if paragraph.type == "title" and paragraph.level != 0:
+            raise HTTPException(status_code=502, detail="Model returned an invalid title level")
+        if paragraph.type == "heading" and paragraph.level == 0:
+            raise HTTPException(status_code=502, detail="Model returned an invalid heading level")
+    return FormatOrganizeResponse(paragraphs=organized)
 
 
 def build_docx(payload: FormatExportDocxRequest) -> BytesIO:
@@ -270,8 +280,8 @@ def build_docx(payload: FormatExportDocxRequest) -> BytesIO:
     for run in title.runs:
         apply_run_style(run, payload.config, bold=True)
 
-    for block in payload.blocks:
-        add_block(document, block, payload.config)
+    for paragraph in payload.paragraphs:
+        add_paragraph(document, paragraph, payload.config)
 
     buffer = BytesIO()
     document.save(buffer)

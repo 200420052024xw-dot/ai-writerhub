@@ -44,7 +44,7 @@ async def test_format_model(payload: ModelConnectionTestRequest) -> dict[str, bo
 
 @router.post("/format/export/docx")
 async def export_format_docx(payload: FormatExportDocxRequest) -> StreamingResponse:
-    if not payload.title.strip() and not payload.blocks:
+    if not payload.title.strip() and not payload.paragraphs:
         raise HTTPException(status_code=400, detail="document content is required")
 
     buffer = build_docx(payload)
@@ -59,7 +59,7 @@ async def export_format_docx(payload: FormatExportDocxRequest) -> StreamingRespo
 @router.post("/format/organize", response_model=FormatOrganizeResponse)
 async def organize_format_content(payload: FormatOrganizeRequest) -> FormatOrganizeResponse:
     return await organize_document(
-        payload.text,
+        payload.paragraphs,
         payload.config,
         RuntimeModelConfig(
             api_key=payload.api_key,

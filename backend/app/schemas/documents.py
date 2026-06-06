@@ -9,6 +9,7 @@ from app.schemas.translation import GlossaryEntry
 DocumentFileType = Literal["txt", "md", "doc", "docx", "pdf", "ppt", "pptx"]
 RagStatus = Literal["not_indexed", "indexed", "outdated", "indexing", "failed"]
 DocumentParagraphType = Literal["title", "heading", "paragraph", "list", "table"]
+DocumentLanguage = Literal["zh", "en"]
 
 
 class DocumentSummary(BaseModel):
@@ -16,8 +17,10 @@ class DocumentSummary(BaseModel):
     title: str
     content_hash: str
     rag_status: RagStatus
+    language: DocumentLanguage = "zh"
     last_saved_at: datetime
     last_indexed_at: datetime | None = None
+    deleted_at: datetime | None = None
 
 
 class DocumentParagraph(BaseModel):
@@ -49,12 +52,14 @@ class DocumentCreateRequest(BaseModel):
     title: str = "无标题文档"
     content: str = ""
     glossary: list[GlossaryEntry] = Field(default_factory=list)
+    language: DocumentLanguage | None = None
 
 
 class DocumentUpdateRequest(BaseModel):
     title: str | None = None
     content: str | None = None
     glossary: list[GlossaryEntry] | None = None
+    language: DocumentLanguage | None = None
 
 
 class DocumentListResponse(BaseModel):
@@ -63,3 +68,11 @@ class DocumentListResponse(BaseModel):
 
 class DocumentParagraphsUpdateRequest(BaseModel):
     paragraphs: list[DocumentParagraphInput] = Field(default_factory=list)
+
+
+class TrashListResponse(BaseModel):
+    documents: list[DocumentSummary]
+
+
+class TrashPurgeResponse(BaseModel):
+    purged: int

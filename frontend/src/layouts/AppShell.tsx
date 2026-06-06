@@ -7,7 +7,7 @@ import { DocumentsPage } from "../pages/DocumentsPage";
 import { HomePage } from "../pages/HomePage";
 import { SettingsPage } from "../pages/SettingsPage";
 import { loadModelSettings } from "../services/modelSettings";
-import { createStoredDocument, listStoredDocuments, getStoredDocument, type StoredDocumentDetail, type StoredDocumentSummary } from "../services/api";
+import { createStoredDocument, getActiveTranslationJobs, listStoredDocuments, getStoredDocument, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
 import type { HealthState, NavigationKey } from "../types";
 
 type AppShellProps = {
@@ -57,6 +57,7 @@ export function AppShell({ healthState }: AppShellProps) {
   const [showFileSelector, setShowFileSelector] = useState(false);
   const [fileList, setFileList] = useState<StoredDocumentSummary[]>([]);
   const [fileListLoading, setFileListLoading] = useState(false);
+  const [translationJobs, setTranslationJobs] = useState<TranslationJob[]>([]);
 
   const loadFileList = async () => {
     setFileListLoading(true);
@@ -208,6 +209,24 @@ export function AppShell({ healthState }: AppShellProps) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const refreshJobs = async () => {
+      try {
+        const jobs = await getActiveTranslationJobs();
+        if (!cancelled) setTranslationJobs(jobs);
+      } catch {
+        if (!cancelled) setTranslationJobs([]);
+      }
+    };
+    void refreshJobs();
+    const timer = window.setInterval(refreshJobs, 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!showFileSelector) return;
     const closeFileSelector = () => setShowFileSelector(false);
     window.addEventListener("click", closeFileSelector);
@@ -267,6 +286,12 @@ export function AppShell({ healthState }: AppShellProps) {
               >
                 <Icon size={20} />
                 <span>{item.label}</span>
+                {item.key === "translate" && translationJobs.length > 0 && (
+                  <span className="nav-progress-badge">
+                    {translationJobs.reduce((done, job) => done + job.completed_chunks, 0)}/
+                    {translationJobs.reduce((total, job) => total + Math.max(job.total_chunks, 1), 0)}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -330,7 +355,10 @@ export function AppShell({ healthState }: AppShellProps) {
                         </span>
                         <div className="file-selector-info">
                           <span className="file-selector-name">{doc.title || "无标题文档"}</span>
-                          <span className="file-selector-meta">{doc.rag_status === "indexed" ? "已解析" : doc.rag_status === "outdated" ? "待更新" : "待解析"}</span>
+                          <span className="file-selector-meta">
+                            <span className={`document-language-badge compact ${doc.language}`}>{doc.language === "zh" ? "中文" : "英文"}</span>
+                            {doc.rag_status === "indexed" ? "已解析" : doc.rag_status === "outdated" ? "待更新" : "待解析"}
+                          </span>
                         </div>
                       </button>
                     ))}

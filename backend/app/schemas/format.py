@@ -29,14 +29,16 @@ class FormatParseResponse(BaseModel):
     config: FormatConfig
 
 
-class DocumentBlock(BaseModel):
-    type: Literal["heading1", "heading2", "paragraph", "bullet"]
-    text: str
+class FormatDocumentParagraph(BaseModel):
+    paragraph_id: str = Field(min_length=1)
+    type: Literal["title", "heading", "paragraph", "list", "table"]
+    level: int = Field(default=0, ge=0, le=4)
+    content: str = ""
 
 
 class FormatExportDocxRequest(BaseModel):
     title: str
-    blocks: list[DocumentBlock]
+    paragraphs: list[FormatDocumentParagraph]
     config: FormatConfig
 
 
@@ -47,7 +49,7 @@ class ModelConnectionTestRequest(BaseModel):
 
 
 class FormatOrganizeRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=50000)
+    paragraphs: list[FormatDocumentParagraph] = Field(min_length=1)
     config: FormatConfig
     api_key: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
@@ -55,4 +57,4 @@ class FormatOrganizeRequest(BaseModel):
 
 
 class FormatOrganizeResponse(BaseModel):
-    blocks: list[DocumentBlock]
+    paragraphs: list[FormatDocumentParagraph]

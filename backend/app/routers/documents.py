@@ -1,6 +1,14 @@
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.schemas.documents import DocumentCreateRequest, DocumentDetail, DocumentListResponse, DocumentParagraphsUpdateRequest, DocumentUpdateRequest
+from app.schemas.documents import (
+    DocumentCreateRequest,
+    DocumentDetail,
+    DocumentListResponse,
+    DocumentParagraphsUpdateRequest,
+    DocumentUpdateRequest,
+    TrashListResponse,
+    TrashPurgeResponse,
+)
 from app.schemas.rag import RagIndexRequest
 from app.services.document_service import (
     complete_document_index,
@@ -9,8 +17,13 @@ from app.services.document_service import (
     delete_document,
     get_document,
     list_documents,
+    list_trashed_documents,
     mark_document_index_failed,
     mark_document_indexing,
+    permanent_delete_document,
+    purge_expired_trash,
+    restore_document,
+    trash_document,
     update_document,
     update_document_paragraphs,
     upload_and_parse_document,
@@ -25,6 +38,11 @@ router = APIRouter()
 @router.get("/documents", response_model=DocumentListResponse)
 async def documents() -> DocumentListResponse:
     return DocumentListResponse(documents=list_documents())
+
+
+@router.get("/documents/trash", response_model=TrashListResponse)
+async def trashed_documents() -> TrashListResponse:
+    return TrashListResponse(documents=list_trashed_documents())
 
 
 @router.get("/documents/{document_id}", response_model=DocumentDetail)
@@ -49,8 +67,26 @@ async def save_document_paragraphs(document_id: str, payload: DocumentParagraphs
 
 @router.delete("/documents/{document_id}")
 async def remove_document(document_id: str) -> dict[str, bool]:
-    delete_document(document_id)
+    trash_document(document_id)
     return {"ok": True}
+
+
+@router.post("/documents/{document_id}/restore")
+async def restore_trashed_document(document_id: str) -> dict[str, bool]:
+    restore_document(document_id)
+    return {"ok": True}
+
+
+@router.delete("/documents/{document_id}/permanent")
+async def permanently_delete_document(document_id: str) -> dict[str, bool]:
+    permanent_delete_document(document_id)
+    return {"ok": True}
+
+
+@router.post("/documents/trash/purge", response_model=TrashPurgeResponse)
+async def purge_trash() -> TrashPurgeResponse:
+    purged = purge_expired_trash()
+    return TrashPurgeResponse(purged=purged)
 
 
 @router.post("/documents/{document_id}/index", response_model=DocumentDetail)

@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { CheckCircle2, ChevronDown, Database, Eye, EyeOff, KeyRound, PlugZap, Save, ServerCog } from "lucide-react";
-import { testFormatModel } from "../services/api";
+import { useEffect, useState } from "react";
+import { CheckCircle2, ChevronDown, Database, Eye, EyeOff, KeyRound, PlugZap, RotateCcw, Save, ServerCog, Trash2, X } from "lucide-react";
+import { listTrashedDocuments, restoreDocument, permanentDeleteDocument, type TrashedDocument, testFormatModel } from "../services/api";
 import { loadRagSettings, saveRagSettings, type RagSettings } from "../services/ragSettings";
+import { loadKnowledgeSaveSettings, saveKnowledgeSaveSettings, type KnowledgeSaveSettings } from "../services/knowledgeSaveSettings";
 import {
   loadModelSettings,
   MODEL_PROVIDER_PRESETS,
@@ -13,17 +14,25 @@ import {
 export function SettingsPage() {
   const [settings, setSettings] = useState<ModelSettings>(() => loadModelSettings());
   const [ragSettings, setRagSettings] = useState<RagSettings>(() => loadRagSettings());
+  const [kbSaveSettings, setKbSaveSettings] = useState<KnowledgeSaveSettings>(() => loadKnowledgeSaveSettings());
   const [showKey, setShowKey] = useState(false);
   const [aiSaved, setAiSaved] = useState(false);
   const [ragSaved, setRagSaved] = useState(false);
+  const [kbSaveOpen, setKbSaveOpen] = useState(false);
+  const [kbSaveSaved, setKbSaveSaved] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testState, setTestState] = useState<"idle" | "ok" | "failed">("idle");
   const [testMessage, setTestMessage] = useState("");
   const [ragTesting, setRagTesting] = useState(false);
   const [ragTestState, setRagTestState] = useState<"idle" | "ok" | "failed">("idle");
   const [ragTestMessage, setRagTestMessage] = useState("");
-  const [aiOpen, setAiOpen] = useState(true);
-  const [ragOpen, setRagOpen] = useState(true);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [ragOpen, setRagOpen] = useState(false);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trashDocs, setTrashDocs] = useState<TrashedDocument[]>([]);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashMessage, setTrashMessage] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const selectProvider = (providerId: ModelProviderId) => {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
@@ -41,6 +50,16 @@ export function SettingsPage() {
 
   const updateRagField = <K extends keyof RagSettings>(field: K, value: RagSettings[K]) => {
     setRagSettings((current) => ({ ...current, [field]: value }));
+  };
+
+  const updateKbSaveField = <K extends keyof KnowledgeSaveSettings>(field: K, value: KnowledgeSaveSettings[K]) => {
+    setKbSaveSettings((current) => ({ ...current, [field]: value }));
+  };
+
+  const saveKbSave = () => {
+    saveKnowledgeSaveSettings(kbSaveSettings);
+    setKbSaveSaved(true);
+    window.setTimeout(() => setKbSaveSaved(false), 1800);
   };
 
   const saveAi = () => {
@@ -95,6 +114,60 @@ export function SettingsPage() {
     } finally {
       setRagTesting(false);
     }
+  };
+
+  const loadTrash = async () => {
+    setTrashLoading(true);
+    try {
+      const result = await listTrashedDocuments();
+      setTrashDocs(result.documents);
+    } catch {
+      setTrashDocs([]);
+    } finally {
+      setTrashLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (trashOpen) void loadTrash();
+  }, [trashOpen]);
+
+  const handleRestore = async (documentId: string) => {
+    try {
+      await restoreDocument(documentId);
+      setTrashMessage("已恢复");
+      window.setTimeout(() => setTrashMessage(""), 2000);
+      await loadTrash();
+    } catch {
+      setTrashMessage("恢复失败");
+    }
+  };
+
+  const handlePermanentDelete = async (documentId: string) => {
+    try {
+      await permanentDeleteDocument(documentId);
+      setConfirmDeleteId(null);
+      setTrashMessage("已永久删除");
+      window.setTimeout(() => setTrashMessage(""), 2000);
+      await loadTrash();
+    } catch {
+      setTrashMessage("删除失败");
+    }
+  };
+
+  const formatTrashTime = (value: string | null) => {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "-";
+    return date.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const daysRemaining = (deletedAt: string | null) => {
+    if (!deletedAt) return 0;
+    const deleted = new Date(deletedAt).getTime();
+    const elapsed = Date.now() - deleted;
+    const remaining = 15 - Math.floor(elapsed / 86400000);
+    return Math.max(0, remaining);
   };
 
   return (
@@ -256,6 +329,108 @@ export function SettingsPage() {
               </>
             )}
           </section>
+
+          <section className={`settings-collapse ${kbSaveOpen ? "open" : ""}`}>
+            <button className="settings-collapse-head" onClick={() => setKbSaveOpen((open) => !open)} type="button">
+              <div>
+                <span>知识库保存</span>
+                <h2>对话保存为文档时包含的内容</h2>
+              </div>
+              <ChevronDown size={18} />
+            </button>
+
+            {kbSaveOpen && (
+              <>
+                <label className="rag-switch-row">
+                  <span>包含检索来源</span>
+                  <button
+                    className={`switch-control ${kbSaveSettings.includeSearchResults ? "on" : ""}`}
+                    onClick={() => updateKbSaveField("includeSearchResults", !kbSaveSettings.includeSearchResults)}
+                    type="button"
+                    aria-pressed={kbSaveSettings.includeSearchResults}
+                  >
+                    <span />
+                  </button>
+                </label>
+
+                <label className="rag-switch-row">
+                  <span>包含时间戳</span>
+                  <button
+                    className={`switch-control ${kbSaveSettings.includeTimestamp ? "on" : ""}`}
+                    onClick={() => updateKbSaveField("includeTimestamp", !kbSaveSettings.includeTimestamp)}
+                    type="button"
+                    aria-pressed={kbSaveSettings.includeTimestamp}
+                  >
+                    <span />
+                  </button>
+                </label>
+
+                <label className="rag-switch-row">
+                  <span>包含来源文档标题</span>
+                  <button
+                    className={`switch-control ${kbSaveSettings.includeSourceTitle ? "on" : ""}`}
+                    onClick={() => updateKbSaveField("includeSourceTitle", !kbSaveSettings.includeSourceTitle)}
+                    type="button"
+                    aria-pressed={kbSaveSettings.includeSourceTitle}
+                  >
+                    <span />
+                  </button>
+                </label>
+
+                <div className="settings-actions">
+                  {kbSaveSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}
+                  <button className="settings-save-action" onClick={saveKbSave} type="button">
+                    <Save size={18} />
+                    保存设置
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
+
+          <section className={`settings-collapse ${trashOpen ? "open" : ""}`}>
+            <button className="settings-collapse-head" onClick={() => setTrashOpen((open) => !open)} type="button">
+              <div>
+                <span>回收站</span>
+                <h2>已删除的文档，保留 15 天后自动清除</h2>
+              </div>
+              <ChevronDown size={18} />
+            </button>
+
+            {trashOpen && (
+              <>
+                {trashLoading ? (
+                  <div className="trash-empty">加载中...</div>
+                ) : trashDocs.length === 0 ? (
+                  <div className="trash-empty">回收站为空</div>
+                ) : (
+                  <div className="trash-list">
+                    {trashDocs.map((doc) => (
+                      <div className="trash-item" key={doc.id}>
+                        <div className="trash-item-info">
+                          <span className="trash-item-title">{doc.title || "无标题文档"}</span>
+                          <span className="trash-item-meta">
+                            删除于 {formatTrashTime(doc.deleted_at)} · 剩余 {daysRemaining(doc.deleted_at)} 天
+                          </span>
+                        </div>
+                        <div className="trash-item-actions">
+                          <button className="trash-restore-btn" onClick={() => void handleRestore(doc.id)} type="button" title="恢复">
+                            <RotateCcw size={14} />
+                            恢复
+                          </button>
+                          <button className="trash-delete-btn" onClick={() => setConfirmDeleteId(doc.id)} type="button" title="永久删除">
+                            <Trash2 size={14} />
+                            永久删除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {trashMessage && <div className="trash-message">{trashMessage}</div>}
+              </>
+            )}
+          </section>
         </article>
 
         <aside className="panel settings-side">
@@ -278,6 +453,30 @@ export function SettingsPage() {
           </section>
         </aside>
       </div>
+
+      {confirmDeleteId && (
+        <div className="modal-overlay" onClick={() => setConfirmDeleteId(null)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>永久删除</h3>
+              <button className="modal-close" onClick={() => setConfirmDeleteId(null)} type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p>确定要永久删除该文档吗？此操作不可撤销。</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setConfirmDeleteId(null)} type="button">
+                取消
+              </button>
+              <button className="btn-danger" onClick={() => void handlePermanentDelete(confirmDeleteId)} type="button">
+                永久删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
