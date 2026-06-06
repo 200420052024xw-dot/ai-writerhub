@@ -37,14 +37,14 @@ export function SettingsPage() {
   const selectProvider = (providerId: ModelProviderId) => {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
     if (!preset) return;
-    setSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, defaultModel: preset.defaultModel }));
+    setSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, defaultModel: preset.defaultModel, visionModel: preset.visionModel }));
   };
 
   const updateField = (field: keyof ModelSettings, value: string) => {
     setSettings((current) => ({
       ...current,
       [field]: value,
-      providerId: field === "baseUrl" || field === "defaultModel" ? "custom" : current.providerId,
+      providerId: field === "baseUrl" || field === "defaultModel" || field === "visionModel" ? "custom" : current.providerId,
     }));
   };
 
@@ -222,6 +222,10 @@ export function SettingsPage() {
                   <label>
                     <span>默认模型</span>
                     <input onChange={(event) => updateField("defaultModel", event.target.value)} value={settings.defaultModel} />
+                  </label>
+                  <label>
+                    <span>视觉模型（文档解析）</span>
+                    <input onChange={(event) => updateField("visionModel", event.target.value)} placeholder="留空则使用默认模型" value={settings.visionModel} />
                   </label>
                 </div>
 

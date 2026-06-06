@@ -8,6 +8,7 @@ import {
   Info,
   Languages,
   LayoutTemplate,
+  Loader2,
   MoreHorizontal,
   Plus,
   RefreshCw,
@@ -22,6 +23,8 @@ import {
   getStoredDocument,
   indexStoredDocument,
   listStoredDocuments,
+  quickUploadDocument,
+  recognizeDocument,
   uploadStoredDocument,
   type StoredDocumentDetail,
   type StoredDocumentSummary,
@@ -34,11 +37,13 @@ type HomePageProps = {
   onTranslateDocument: (document: StoredDocumentDetail) => void;
 };
 
-type ParsedStatus = "parsed" | "pending" | "updated" | "indexing" | "failed";
+type ParsedStatus = "parsed" | "pending" | "updated" | "indexing" | "recognizing" | "failed";
 
-function parseStatus(document: StoredDocumentSummary): ParsedStatus {
+function parseStatus(document: StoredDocumentSummary, recognizingDocs?: Map<string, string>): ParsedStatus {
+  if (recognizingDocs?.has(document.id)) return "recognizing";
   if (document.rag_status === "indexed") return "parsed";
   if (document.rag_status === "indexing") return "indexing";
+  if (document.rag_status === "recognizing") return "recognizing";
   if (document.rag_status === "failed") return "failed";
   if (document.rag_status === "outdated") return "updated";
   return "pending";
@@ -48,6 +53,7 @@ function statusLabel(status: ParsedStatus) {
   if (status === "parsed") return "已解析";
   if (status === "updated") return "待更新";
   if (status === "indexing") return "解析中";
+  if (status === "recognizing") return "识别中";
   if (status === "failed") return "解析失败";
   return "待解析";
 }
@@ -103,6 +109,9 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [showTrashConfirmId, setShowTrashConfirmId] = useState<string | null>(null);
+  const [recognizingDocs, setRecognizingDocs] = useState<Map<string, string>>(new Map());
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [completeMessage, setCompleteMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recentDocument = documents[0];
   const parsedCount = documents.filter((document) => parseStatus(document) === "parsed").length;
@@ -173,9 +182,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   };
 
   const uploadDocuments = async () => {
-    if (selectedFiles.length === 0) {
-      return;
-    }
+    if (selectedFiles.length === 0) return;
 
     const settings = loadModelSettings();
     if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
@@ -183,26 +190,71 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
       return;
     }
 
+    const filesToUpload = [...selectedFiles];
     setLoading(true);
-    try {
-      let lastDocument: StoredDocumentDetail | null = null;
-      for (const file of selectedFiles) {
-        lastDocument = await uploadStoredDocument({
-          file,
+
+    // 阶段1：快速上传，创建文件
+    const uploaded: { docId: string; file: File }[] = [];
+    for (const file of filesToUpload) {
+      try {
+        const doc = await quickUploadDocument(file);
+        setRecognizingDocs((prev) => new Map(prev).set(doc.id, file.name));
+        uploaded.push({ docId: doc.id, file });
+      } catch {
+        showMessage(`${file.name} 上传失败`);
+      }
+    }
+
+    if (uploaded.length === 0) {
+      setLoading(false);
+      return;
+    }
+
+    // 刷新列表，让新文档立即显示（状态为"识别中"）
+    await refresh();
+
+    // 关闭弹窗
+    setSelectedFiles([]);
+    setShowUploadModal(false);
+    setLoading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+
+    // 阶段2：后台并行视觉识别（不阻塞 UI）
+    const results = await Promise.allSettled(
+      uploaded.map(({ docId }) =>
+        recognizeDocument({
+          documentId: docId,
           api_key: settings.apiKey,
           base_url: settings.baseUrl,
           model: settings.defaultModel,
-        });
+          vision_model: settings.visionModel || undefined,
+        }),
+      ),
+    );
+
+    let successCount = 0;
+    let failCount = 0;
+    results.forEach((result, index) => {
+      const docId = uploaded[index].docId;
+      if (result.status === "fulfilled") {
+        successCount++;
+      } else {
+        failCount++;
       }
-      await refresh();
-      if (lastDocument) onOpenDocument(lastDocument);
-      setSelectedFiles([]);
-      setShowUploadModal(false);
-    } catch {
-      showMessage("上传解析失败，请检查模型或文件转换环境");
-    } finally {
-      setLoading(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
+      setRecognizingDocs((prev) => {
+        const next = new Map(prev);
+        next.delete(docId);
+        return next;
+      });
+    });
+
+    await refresh();
+
+    if (failCount === 0) {
+      setCompleteMessage(`全部 ${successCount} 个文档解析完成`);
+      setShowCompleteModal(true);
+    } else {
+      showMessage(`${successCount} 个成功，${failCount} 个失败，请检查模型或文件`);
     }
   };
 
@@ -370,8 +422,12 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
               type="file"
             />
             <div className="home-upload-actions">
-              <button disabled type="button" title="普通解析将使用 OCR，后续接入">
-                普通解析
+              <button
+                disabled={selectedFiles.length === 0 || loading}
+                onClick={() => void uploadDocuments()}
+                type="button"
+              >
+                {loading ? <><Loader2 className="spin" size={15} /> 创建中...</> : "普通解析"}
               </button>
               <button
                 className="primary-action"
@@ -379,7 +435,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                 onClick={() => void uploadDocuments()}
                 type="button"
               >
-                精细解析
+                {loading ? <><Loader2 className="spin" size={15} /> 创建中...</> : "精细解析"}
               </button>
             </div>
           </div>
@@ -412,7 +468,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
             </div>
             <div>
               <span>继续上次编辑</span>
-              <strong>{recentDocument?.title || "暂无最近文档"}</strong>
+              <strong>{recentDocument ? (recentDocument.title.length > 10 ? recentDocument.title.slice(0, 10) + "..." : recentDocument.title) : "暂无最近文档"}</strong>
               <p>
                 {recentDocument ? `最近打开：${formatTime(recentDocument.last_saved_at)}` : "编辑页会自动保留您上次打开的文档内容"}
               </p>
@@ -465,21 +521,25 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
           {documents.length === 0 ? (
             <div className="home-empty">{loading ? "正在加载..." : "暂无文档，先新建或上传一个文档。"}</div>
           ) : (
-            documents.map((document) => (
+            documents.map((document) => {
+              const status = parseStatus(document, recognizingDocs);
+              const isRecognizing = status === "recognizing";
+              return (
               <div
-                className="home-doc-row"
+                className={`home-doc-row${isRecognizing ? " recognizing" : ""}`}
                 key={document.id}
-                onClick={() => void onOpenDocumentClick(document.id, onOpenDocument)}
+                onClick={isRecognizing ? undefined : () => void onOpenDocumentClick(document.id, onOpenDocument)}
               >
-                <button className="home-doc-title" onClick={(event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onOpenDocument); }} type="button">
+                <button className="home-doc-title" onClick={isRecognizing ? undefined : (event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onOpenDocument); }} type="button" disabled={isRecognizing}>
                   <span className="home-file-badge text">DOC</span>
                   <span>
-                    <strong>{document.title}</strong>
-                    <small className={`document-language-badge compact ${document.language}`}>{document.language === "zh" ? "中文" : "英文"}</small>
+                    <strong>{document.title.length > 10 ? document.title.slice(0, 10) + "..." : document.title}</strong>
+                    {!isRecognizing && <small className={`document-language-badge compact ${document.language}`}>{document.language === "zh" ? "中文" : "英文"}</small>}
                   </span>
                 </button>
-                <span className={`parse-status ${parseStatus(document)}`}>{statusLabel(parseStatus(document))}</span>
+                <span className={`parse-status ${status}`}>{statusLabel(status)}</span>
                 <span>{formatTime(document.last_saved_at)}</span>
+                {!isRecognizing ? (
                 <div className="home-doc-actions">
                   <button onClick={(event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onTranslateDocument); }} type="button">
                     <Languages size={15} />
@@ -550,8 +610,10 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                     )}
                   </div>
                 </div>
+                ) : null}
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>
@@ -582,6 +644,31 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                 type="button"
               >
                 删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCompleteModal && (
+        <div className="modal-overlay" onClick={() => setShowCompleteModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>解析完成</h3>
+              <button className="modal-close" onClick={() => setShowCompleteModal(false)} type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <div className="parse-modal-icon">
+                <CheckCircle2 size={36} />
+              </div>
+              <p>{completeMessage}</p>
+              <p className="modal-hint">文档已可正常打开和编辑。</p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-primary" onClick={() => setShowCompleteModal(false)} type="button">
+                确定
               </button>
             </div>
           </div>

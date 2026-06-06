@@ -770,6 +770,9 @@ kbd {
   font-size: 42px;
   font-weight: 800;
   line-height: 1.35;
+  resize: none;
+  overflow: hidden;
+  font-family: inherit;
 }
 
 .document-title-input::placeholder {
@@ -3683,6 +3686,11 @@ button:disabled {
   cursor: pointer;
 }
 
+.home-doc-title:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
 .home-doc-title strong {
   color: #0f5bff;
   font-size: 15px;
@@ -3783,6 +3791,23 @@ button:disabled {
 .parse-status.indexing {
   color: #0f5bff;
   background: #eaf1ff;
+}
+
+.parse-status.recognizing {
+  color: #6d28d9;
+  background: #f3e8ff;
+  animation: pulse-recognizing 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-recognizing {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.home-doc-row.recognizing {
+  opacity: 0.7;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .parse-status.failed {

@@ -1316,9 +1316,13 @@ export function EditorPage({
           )}
           {editor && <EditorToolbar editor={editor} onCopy={(type) => void writeToClipboard(type)} />}
           <div className="tiptap-editor">
-            <input
+            <textarea
               className="document-title-input"
-              onChange={(event) => updateDocumentTitle(event.target.value)}
+              onChange={(event) => {
+                updateDocumentTitle(event.target.value);
+                event.target.style.height = "auto";
+                event.target.style.height = event.target.scrollHeight + "px";
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -1326,7 +1330,14 @@ export function EditorPage({
                 }
               }}
               placeholder="请输入标题"
+              rows={1}
               value={documentTitle}
+              ref={(el) => {
+                if (el) {
+                  el.style.height = "auto";
+                  el.style.height = el.scrollHeight + "px";
+                }
+              }}
             />
             {bodyEmpty && <div className="body-empty-placeholder">直接输入正文</div>}
             <EditorContent editor={editor} />

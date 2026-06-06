@@ -5,7 +5,6 @@ import json
 import os
 import re
 import shutil
-import sqlite3
 import subprocess
 import textwrap
 import uuid
@@ -16,6 +15,7 @@ import fitz
 from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageDraw, ImageFont
 
+from app.core.database import _ConnectionCtx
 from app.prompts.documents import DOCUMENT_VISION_PROMPT
 from app.schemas.documents import (
     DocumentCreateRequest,
@@ -28,11 +28,11 @@ from app.schemas.documents import (
 from app.services.llm_client import RuntimeModelConfig, call_vision_model
 
 
+SUPPORTED_EXTENSIONS = {"txt", "md", "doc", "docx", "pdf", "ppt", "pptx"}
+
 STORAGE_ROOT = Path(__file__).resolve().parents[1] / "storage" / "documents"
 ORIGINAL_DIR = STORAGE_ROOT / "originals"
 WORK_DIR = STORAGE_ROOT / "work"
-DB_PATH = STORAGE_ROOT / "documents.sqlite3"
-SUPPORTED_EXTENSIONS = {"txt", "md", "doc", "docx", "pdf", "ppt", "pptx"}
 
 
 def now_utc() -> datetime:
@@ -132,89 +132,27 @@ def paragraphs_to_markdown(paragraphs: list[DocumentParagraph] | list[DocumentPa
 def ensure_storage() -> None:
     ORIGINAL_DIR.mkdir(parents=True, exist_ok=True)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
-    with connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS documents (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                content TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                rag_status TEXT NOT NULL,
-                language TEXT NOT NULL DEFAULT 'zh',
-                last_saved_at TEXT NOT NULL,
-                last_indexed_at TEXT,
-                glossary_json TEXT NOT NULL DEFAULT '[]'
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS document_paragraphs (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                paragraph_index INTEGER NOT NULL,
-                type TEXT NOT NULL,
-                level INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
-        if "glossary_json" not in columns:
-            conn.execute("ALTER TABLE documents ADD COLUMN glossary_json TEXT NOT NULL DEFAULT '[]'")
-        if "language" not in columns:
-            conn.execute("ALTER TABLE documents ADD COLUMN language TEXT NOT NULL DEFAULT 'zh'")
-            rows = conn.execute("SELECT id, title, content FROM documents").fetchall()
-            for row in rows:
-                conn.execute(
-                    "UPDATE documents SET language = ? WHERE id = ?",
-                    (detect_document_language(f"{row['title']}\n{row['content']}"), row["id"]),
-                )
-        if "deleted_at" not in columns:
-            conn.execute("ALTER TABLE documents ADD COLUMN deleted_at TEXT")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS knowledge_conversations (
-                id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                document_ids_json TEXT NOT NULL,
-                messages_json TEXT NOT NULL,
-                search_results_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS document_assistant_messages (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.commit()
 
 
-def connect() -> sqlite3.Connection:
-    STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+def _get_original_dir() -> Path:
+    ensure_storage()
+    return ORIGINAL_DIR
 
 
-def fetch_paragraphs(conn: sqlite3.Connection, document_id: str) -> list[DocumentParagraph]:
+def _get_work_dir() -> Path:
+    ensure_storage()
+    return WORK_DIR
+
+
+def connect():
+    return _ConnectionCtx()
+
+
+def fetch_paragraphs(conn, document_id: str) -> list[DocumentParagraph]:
     rows = conn.execute(
         """
         SELECT * FROM document_paragraphs
-        WHERE document_id = ?
+        WHERE document_id = %s
         ORDER BY paragraph_index ASC
         """,
         (document_id,),
@@ -243,12 +181,12 @@ def title_from_paragraphs(paragraphs: list[DocumentParagraph] | list[DocumentPar
 
 
 def replace_document_paragraphs(
-    conn: sqlite3.Connection,
+    conn,
     document_id: str,
     paragraphs: list[DocumentParagraphInput],
     timestamp: str,
 ) -> list[DocumentParagraph]:
-    existing_rows = conn.execute("SELECT id, created_at FROM document_paragraphs WHERE document_id = ?", (document_id,)).fetchall()
+    existing_rows = conn.execute("SELECT id, created_at FROM document_paragraphs WHERE document_id = %s", (document_id,)).fetchall()
     existing_created_at = {row["id"]: row["created_at"] for row in existing_rows}
     seen_ids: set[str] = set()
     saved: list[DocumentParagraph] = []
@@ -264,14 +202,14 @@ def replace_document_paragraphs(
             """
             INSERT INTO document_paragraphs
             (id, document_id, paragraph_index, type, level, content, content_hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                paragraph_index = excluded.paragraph_index,
-                type = excluded.type,
-                level = excluded.level,
-                content = excluded.content,
-                content_hash = excluded.content_hash,
-                updated_at = excluded.updated_at
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                paragraph_index = VALUES(paragraph_index),
+                type = VALUES(type),
+                level = VALUES(level),
+                content = VALUES(content),
+                content_hash = VALUES(content_hash),
+                updated_at = VALUES(updated_at)
             """,
             (
                 paragraph_id,
@@ -300,17 +238,17 @@ def replace_document_paragraphs(
         )
 
     if seen_ids:
-        placeholders = ",".join("?" for _ in seen_ids)
+        placeholders = ",".join("%s" for _ in seen_ids)
         conn.execute(
-            f"DELETE FROM document_paragraphs WHERE document_id = ? AND id NOT IN ({placeholders})",
+            f"DELETE FROM document_paragraphs WHERE document_id = %s AND id NOT IN ({placeholders})",
             (document_id, *seen_ids),
         )
     else:
-        conn.execute("DELETE FROM document_paragraphs WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM document_paragraphs WHERE document_id = %s", (document_id,))
     return saved
 
 
-def row_to_summary(row: sqlite3.Row) -> DocumentSummary:
+def row_to_summary(row) -> DocumentSummary:
     return DocumentSummary(
         id=row["id"],
         title=row["title"],
@@ -323,7 +261,7 @@ def row_to_summary(row: sqlite3.Row) -> DocumentSummary:
     )
 
 
-def row_to_detail(row: sqlite3.Row, paragraphs: list[DocumentParagraph] | None = None) -> DocumentDetail:
+def row_to_detail(row, paragraphs: list[DocumentParagraph] | None = None) -> DocumentDetail:
     try:
         glossary = json.loads(row["glossary_json"] or "[]")
     except json.JSONDecodeError:
@@ -336,6 +274,11 @@ def row_to_detail(row: sqlite3.Row, paragraphs: list[DocumentParagraph] | None =
 def list_documents() -> list[DocumentSummary]:
     ensure_storage()
     with connect() as conn:
+        # 清理卡在 recognizing 状态的文档（上次上传中断）
+        conn.execute(
+            "UPDATE documents SET rag_status = 'failed' WHERE rag_status = 'recognizing' AND deleted_at IS NULL"
+        )
+
         rows = conn.execute("SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY last_saved_at DESC").fetchall()
     return [row_to_summary(row) for row in rows]
 
@@ -344,9 +287,9 @@ def get_document(document_id: str, include_trashed: bool = False) -> DocumentDet
     ensure_storage()
     with connect() as conn:
         if include_trashed:
-            row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
+            row = conn.execute("SELECT * FROM documents WHERE id = %s", (document_id,)).fetchone()
         else:
-            row = conn.execute("SELECT * FROM documents WHERE id = ? AND deleted_at IS NULL", (document_id,)).fetchone()
+            row = conn.execute("SELECT * FROM documents WHERE id = %s AND deleted_at IS NULL", (document_id,)).fetchone()
         paragraphs = fetch_paragraphs(conn, document_id) if row else []
     if not row:
         raise HTTPException(status_code=404, detail="document not found")
@@ -361,20 +304,16 @@ def delete_document(document_id: str) -> None:
 
     delete_document_index(document_id)
     with connect() as conn:
-        conn.execute("DELETE FROM document_paragraphs WHERE document_id = ?", (document_id,))
-        conn.execute("DELETE FROM document_assistant_messages WHERE document_id = ?", (document_id,))
-        if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_translation_states'").fetchone():
-            conn.execute("DELETE FROM document_translation_states WHERE document_id = ?", (document_id,))
-        if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_translation_versions'").fetchone():
-            conn.execute("DELETE FROM document_translation_versions WHERE document_id = ?", (document_id,))
-        if conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'translation_jobs'").fetchone():
-            conn.execute("DELETE FROM translation_jobs WHERE document_id = ?", (document_id,))
-        conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
-        conn.commit()
+        conn.execute("DELETE FROM document_paragraphs WHERE document_id = %s", (document_id,))
+        conn.execute("DELETE FROM document_assistant_messages WHERE document_id = %s", (document_id,))
+        conn.execute("DELETE FROM document_translation_versions WHERE document_id = %s", (document_id,))
+        conn.execute("DELETE FROM translation_jobs WHERE document_id = %s", (document_id,))
+        conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))
 
-    for path in ORIGINAL_DIR.glob(f"{document_id}.*"):
+
+    for path in _get_original_dir().glob(f"{document_id}.*"):
         path.unlink(missing_ok=True)
-    work_dir = WORK_DIR / document_id
+    work_dir = _get_work_dir() / document_id
     if work_dir.exists():
         shutil.rmtree(work_dir)
 
@@ -388,8 +327,8 @@ def trash_document(document_id: str) -> None:
     delete_document_index(document_id)
     timestamp = now_utc().isoformat()
     with connect() as conn:
-        conn.execute("UPDATE documents SET deleted_at = ?, rag_status = 'not_indexed' WHERE id = ?", (timestamp, document_id))
-        conn.commit()
+        conn.execute("UPDATE documents SET deleted_at = %s, rag_status = 'not_indexed' WHERE id = %s", (timestamp, document_id))
+
 
 
 def restore_document(document_id: str) -> None:
@@ -397,11 +336,11 @@ def restore_document(document_id: str) -> None:
     ensure_storage()
     get_document(document_id, include_trashed=True)
     with connect() as conn:
-        row = conn.execute("SELECT deleted_at FROM documents WHERE id = ?", (document_id,)).fetchone()
+        row = conn.execute("SELECT deleted_at FROM documents WHERE id = %s", (document_id,)).fetchone()
         if not row or not row["deleted_at"]:
             raise HTTPException(status_code=400, detail="文档不在回收站中")
-        conn.execute("UPDATE documents SET deleted_at = NULL WHERE id = ?", (document_id,))
-        conn.commit()
+        conn.execute("UPDATE documents SET deleted_at = NULL WHERE id = %s", (document_id,))
+
 
 
 def permanent_delete_document(document_id: str) -> None:
@@ -461,12 +400,12 @@ def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
             """
             INSERT INTO documents
             (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (document_id, title, content, content_hash(content), "not_indexed", language, timestamp, None, glossary_json),
         )
         replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
-        conn.commit()
+
     return get_document(document_id)
 
 
@@ -497,8 +436,8 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
         conn.execute(
             """
             UPDATE documents
-            SET title = ?, content = ?, content_hash = ?, rag_status = ?, language = ?, last_saved_at = ?, glossary_json = ?
-            WHERE id = ?
+            SET title = %s, content = %s, content_hash = %s, rag_status = %s, language = %s, last_saved_at = %s, glossary_json = %s
+            WHERE id = %s
             """,
             (
                 next_title.strip() or "无标题文档",
@@ -513,7 +452,7 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
         )
         if next_paragraphs is not None:
             replace_document_paragraphs(conn, document_id, next_paragraphs, timestamp)
-        conn.commit()
+
     return get_document(document_id)
 
 
@@ -536,28 +475,28 @@ def update_document_paragraphs(document_id: str, paragraphs: list[DocumentParagr
         conn.execute(
             """
             UPDATE documents
-            SET title = ?, content = ?, content_hash = ?, rag_status = ?, last_saved_at = ?
-            WHERE id = ?
+            SET title = %s, content = %s, content_hash = %s, rag_status = %s, last_saved_at = %s
+            WHERE id = %s
             """,
             (next_title, next_content, next_hash, next_status, timestamp, document_id),
         )
-        conn.commit()
+
     return get_document(document_id)
 
 
 def mark_document_indexing(document_id: str) -> DocumentDetail:
     get_document(document_id)
     with connect() as conn:
-        conn.execute("UPDATE documents SET rag_status = ? WHERE id = ?", ("indexing", document_id))
-        conn.commit()
+        conn.execute("UPDATE documents SET rag_status = %s WHERE id = %s", ("indexing", document_id))
+
     return get_document(document_id)
 
 
 def mark_document_index_failed(document_id: str) -> DocumentDetail:
     get_document(document_id)
     with connect() as conn:
-        conn.execute("UPDATE documents SET rag_status = ? WHERE id = ?", ("failed", document_id))
-        conn.commit()
+        conn.execute("UPDATE documents SET rag_status = %s WHERE id = %s", ("failed", document_id))
+
     return get_document(document_id)
 
 
@@ -567,10 +506,10 @@ def complete_document_index(document_id: str, indexed_hash: str) -> DocumentDeta
     indexed_at = now_utc().isoformat() if status == "indexed" else current.last_indexed_at.isoformat() if current.last_indexed_at else None
     with connect() as conn:
         conn.execute(
-            "UPDATE documents SET rag_status = ?, last_indexed_at = ? WHERE id = ?",
+            "UPDATE documents SET rag_status = %s, last_indexed_at = %s WHERE id = %s",
             (status, indexed_at, document_id),
         )
-        conn.commit()
+
     return get_document(document_id)
 
 
@@ -590,7 +529,7 @@ async def save_upload(file: UploadFile, document_id: str) -> tuple[Path, str]:
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"不支持的文件格式：{suffix or 'unknown'}")
 
-    target = ORIGINAL_DIR / f"{document_id}.{suffix}"
+    target = _get_original_dir() / f"{document_id}.{suffix}"
     target.write_bytes(await file.read())
     return target, suffix
 
@@ -690,7 +629,7 @@ def office_to_pdf(input_path: Path, output_dir: Path) -> Path:
 
 
 def file_to_image_urls(file_path: Path, file_type: str, document_id: str) -> list[str]:
-    output_dir = WORK_DIR / document_id
+    output_dir = _get_work_dir() / document_id
     if output_dir.exists():
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -721,13 +660,44 @@ async def recognize_pages(image_urls: list[str], model_config: RuntimeModelConfi
     )
 
 
-async def upload_and_parse_document(file: UploadFile, model_config: RuntimeModelConfig) -> DocumentDetail:
+def _find_original_file(document_id: str) -> tuple[Path, str]:
+    """查找已保存的原始文件，返回 (路径, 文件类型)"""
+    for ext in SUPPORTED_EXTENSIONS:
+        path = _get_original_dir() / f"{document_id}.{ext}"
+        if path.exists():
+            return path, ext
+    raise HTTPException(status_code=404, detail="未找到原始文件")
+
+
+async def quick_upload_document(file: UploadFile) -> DocumentDetail:
+    """快速上传：保存文件，创建 DB 记录（recognizing 状态），立即返回"""
     ensure_storage()
     document_id = uuid.uuid4().hex
     file_path, file_type = await save_upload(file, document_id)
+    filename = file.filename or file_path.name
+    stem = Path(filename).stem or "无标题文档"
+    title = stem
+    timestamp = now_utc().isoformat()
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents
+            (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (document_id, title, "", content_hash(""), "recognizing", "zh", timestamp, None, "[]"),
+        )
+
+    return get_document(document_id)
+
+
+async def recognize_document(document_id: str, model_config: RuntimeModelConfig) -> DocumentDetail:
+    """视觉识别：对已保存的文件执行图片转换 + 视觉模型识别，更新文档内容"""
+    get_document(document_id)
+    file_path, file_type = _find_original_file(document_id)
     image_urls = file_to_image_urls(file_path, file_type, document_id)
     content = await recognize_pages(image_urls, model_config)
-    title = infer_title(file.filename or file_path.name, content)
+    title = infer_title(file_path.name, content)
     paragraphs = markdown_to_paragraph_inputs(content, title)
     title = title_from_paragraphs(paragraphs, title)
     content = paragraphs_to_markdown(paragraphs)
@@ -735,13 +705,15 @@ async def upload_and_parse_document(file: UploadFile, model_config: RuntimeModel
     timestamp = now_utc().isoformat()
     with connect() as conn:
         conn.execute(
-            """
-            INSERT INTO documents
-            (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (document_id, title, content, content_hash(content), "not_indexed", language, timestamp, None, "[]"),
+            "UPDATE documents SET title = %s, content = %s, content_hash = %s, rag_status = %s, language = %s, last_saved_at = %s WHERE id = %s",
+            (title, content, content_hash(content), "not_indexed", language, timestamp, document_id),
         )
         replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
-        conn.commit()
+
     return get_document(document_id)
+
+
+async def upload_and_parse_document(file: UploadFile, model_config: RuntimeModelConfig) -> DocumentDetail:
+    """完整上传解析流程（保持兼容）"""
+    doc = await quick_upload_document(file, model_config)
+    return await recognize_document(doc.id, model_config)

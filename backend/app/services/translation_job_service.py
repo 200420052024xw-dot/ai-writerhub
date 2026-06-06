@@ -25,7 +25,6 @@ from app.services.translation_service import (
     translate_structured_unit_chunk,
 )
 from app.services.translation_state_service import (
-    ensure_translation_tables,
     save_translation_version,
     source_hash_for_document,
 )
@@ -57,33 +56,29 @@ def _row_to_job(row) -> TranslationJob:
 
 
 def mark_interrupted_jobs() -> None:
-    ensure_translation_tables()
     timestamp = _now()
     with connect() as conn:
         conn.execute(
             """
             UPDATE translation_jobs
-            SET status = 'interrupted', error = 'Backend restarted before completion', updated_at = ?
+            SET status = 'interrupted', error = 'Backend restarted before completion', updated_at = %s
             WHERE status IN ('queued', 'running')
             """,
             (timestamp,),
         )
-        conn.commit()
 
 
 def get_translation_job(job_id: str) -> TranslationJob | None:
-    ensure_translation_tables()
     with connect() as conn:
-        row = conn.execute("SELECT * FROM translation_jobs WHERE id = ?", (job_id,)).fetchone()
+        row = conn.execute("SELECT * FROM translation_jobs WHERE id = %s", (job_id,)).fetchone()
     return _row_to_job(row) if row else None
 
 
 def list_translation_jobs(document_id: str | None = None, active_only: bool = False) -> list[TranslationJob]:
-    ensure_translation_tables()
     clauses: list[str] = []
     params: list[str] = []
     if document_id:
-        clauses.append("document_id = ?")
+        clauses.append("document_id = %s")
         params.append(document_id)
     if active_only:
         clauses.append("status IN ('queued', 'running')")
@@ -105,27 +100,26 @@ def _set_job(
     error: str | None = None,
     completed: bool = False,
 ) -> None:
-    assignments = ["updated_at = ?"]
+    assignments = ["updated_at = %s"]
     params: list[object] = [_now()]
     if status is not None:
-        assignments.append("status = ?")
+        assignments.append("status = %s")
         params.append(status)
     if total_chunks is not None:
-        assignments.append("total_chunks = ?")
+        assignments.append("total_chunks = %s")
         params.append(total_chunks)
     if completed_chunks is not None:
-        assignments.append("completed_chunks = ?")
+        assignments.append("completed_chunks = %s")
         params.append(completed_chunks)
     if error is not None:
-        assignments.append("error = ?")
+        assignments.append("error = %s")
         params.append(error)
     if completed:
-        assignments.append("completed_at = ?")
+        assignments.append("completed_at = %s")
         params.append(_now())
     params.append(job_id)
     with connect() as conn:
-        conn.execute(f"UPDATE translation_jobs SET {', '.join(assignments)} WHERE id = ?", params)
-        conn.commit()
+        conn.execute(f"UPDATE translation_jobs SET {', '.join(assignments)} WHERE id = %s", params)
 
 
 async def _translate_with_retry(
@@ -296,7 +290,6 @@ async def _run_translation_job(
 
 
 def create_translation_job(document_id: str, payload: TranslationJobCreate) -> TranslationJob:
-    ensure_translation_tables()
     get_document(document_id)
     existing = next(
         (
@@ -317,11 +310,10 @@ def create_translation_job(document_id: str, payload: TranslationJobCreate) -> T
             INSERT INTO translation_jobs
             (id, document_id, direction, granularity, status, total_chunks, completed_chunks,
              error, created_at, updated_at, completed_at)
-            VALUES (?, ?, ?, ?, 'queued', 0, 0, '', ?, ?, NULL)
+            VALUES (%s, %s, %s, %s, 'queued', 0, 0, '', %s, %s, NULL)
             """,
             (job_id, document_id, payload.direction, payload.granularity, timestamp, timestamp),
         )
-        conn.commit()
     model_config = RuntimeModelConfig(
         api_key=payload.ai_config.api_key,
         base_url=payload.ai_config.base_url,

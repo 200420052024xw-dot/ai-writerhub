@@ -10,7 +10,7 @@ from app.schemas.translation import (
     TranslationPair,
     TranslationVersion,
 )
-from app.services.document_service import connect, ensure_storage, get_document
+from app.services.document_service import connect, get_document
 
 
 def _now() -> str:
@@ -32,82 +32,6 @@ def source_hash_for_document(document: DocumentDetail) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-
-def ensure_translation_tables() -> None:
-    ensure_storage()
-    with connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS document_translation_versions (
-                document_id TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                granularity TEXT NOT NULL,
-                source_text TEXT NOT NULL,
-                source_hash TEXT NOT NULL,
-                target_text TEXT NOT NULL,
-                context_summary TEXT NOT NULL,
-                used_context_summary INTEGER NOT NULL,
-                chunks_json TEXT NOT NULL,
-                paragraph_pairs_json TEXT NOT NULL,
-                sentence_pairs_json TEXT NOT NULL,
-                options_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (document_id, direction, granularity)
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS translation_jobs (
-                id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                direction TEXT NOT NULL,
-                granularity TEXT NOT NULL,
-                status TEXT NOT NULL,
-                total_chunks INTEGER NOT NULL,
-                completed_chunks INTEGER NOT NULL,
-                error TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                completed_at TEXT
-            )
-            """
-        )
-        legacy = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'document_translation_states'"
-        ).fetchone()
-        if legacy:
-            rows = conn.execute("SELECT * FROM document_translation_states").fetchall()
-            for row in rows:
-                granularity = "sentence" if row["display_mode"] == "sentence" else "paragraph"
-                source_hash = hashlib.sha256(row["source_text"].encode("utf-8")).hexdigest()
-                conn.execute(
-                    """
-                    INSERT OR IGNORE INTO document_translation_versions
-                    (document_id, direction, granularity, source_text, source_hash, target_text,
-                     context_summary, used_context_summary, chunks_json, paragraph_pairs_json,
-                     sentence_pairs_json, options_json, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["document_id"],
-                        row["direction"],
-                        granularity,
-                        row["source_text"],
-                        source_hash,
-                        row["target_text"],
-                        row["context_summary"],
-                        row["used_context_summary"],
-                        row["chunks_json"],
-                        row["paragraph_pairs_json"],
-                        row["sentence_pairs_json"],
-                        row["options_json"],
-                        row["updated_at"],
-                    ),
-                )
-            conn.execute("DROP TABLE document_translation_states")
-        conn.commit()
 
 
 def _chunks(value: str) -> list[TranslationChunk]:
@@ -145,12 +69,11 @@ def _version_from_row(row, current_hash: str) -> TranslationVersion:
 
 
 def list_translation_versions(document_id: str) -> list[TranslationVersion]:
-    ensure_translation_tables()
     document = get_document(document_id)
     current_hash = source_hash_for_document(document)
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM document_translation_versions WHERE document_id = ? ORDER BY updated_at DESC",
+            "SELECT * FROM document_translation_versions WHERE document_id = %s ORDER BY updated_at DESC",
             (document_id,),
         ).fetchall()
     return [_version_from_row(row, current_hash) for row in rows]
@@ -186,7 +109,6 @@ def save_translation_version(
     sentence_pairs: list[TranslationPair],
     options: TranslationOptions,
 ) -> None:
-    ensure_translation_tables()
     with connect() as conn:
         conn.execute(
             """
@@ -194,18 +116,18 @@ def save_translation_version(
             (document_id, direction, granularity, source_text, source_hash, target_text,
              context_summary, used_context_summary, chunks_json, paragraph_pairs_json,
              sentence_pairs_json, options_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(document_id, direction, granularity) DO UPDATE SET
-                source_text = excluded.source_text,
-                source_hash = excluded.source_hash,
-                target_text = excluded.target_text,
-                context_summary = excluded.context_summary,
-                used_context_summary = excluded.used_context_summary,
-                chunks_json = excluded.chunks_json,
-                paragraph_pairs_json = excluded.paragraph_pairs_json,
-                sentence_pairs_json = excluded.sentence_pairs_json,
-                options_json = excluded.options_json,
-                updated_at = excluded.updated_at
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                source_text = VALUES(source_text),
+                source_hash = VALUES(source_hash),
+                target_text = VALUES(target_text),
+                context_summary = VALUES(context_summary),
+                used_context_summary = VALUES(used_context_summary),
+                chunks_json = VALUES(chunks_json),
+                paragraph_pairs_json = VALUES(paragraph_pairs_json),
+                sentence_pairs_json = VALUES(sentence_pairs_json),
+                options_json = VALUES(options_json),
+                updated_at = VALUES(updated_at)
             """,
             (
                 document_id,
@@ -223,4 +145,3 @@ def save_translation_version(
                 _now(),
             ),
         )
-        conn.commit()

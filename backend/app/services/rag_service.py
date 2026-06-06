@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from app.core.config import get_settings
 from app.schemas.documents import DocumentDetail
 from app.schemas.rag import RagRuntimeConfig, RagSearchResult
-from app.services.document_service import connect, ensure_storage
+from app.services.document_service import connect
 from app.services.llm_client import RuntimeModelConfig, stream_chat_model
 
 
@@ -38,41 +38,6 @@ def runtime_rag_config(config: RagRuntimeConfig | None = None) -> RagRuntimeConf
         enable_rerank=settings.rag_enable_rerank,
         rerank_model_path=settings.rag_rerank_model_path,
     )
-
-
-def ensure_rag_tables() -> None:
-    ensure_storage()
-    with connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rag_chunks (
-                chunk_id TEXT PRIMARY KEY,
-                document_id TEXT NOT NULL,
-                document_title TEXT NOT NULL,
-                paragraph_id TEXT,
-                paragraph_index INTEGER,
-                chunk_index INTEGER NOT NULL,
-                content TEXT NOT NULL,
-                content_hash TEXT NOT NULL
-            )
-            """
-        )
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(rag_chunks)").fetchall()}
-        if "paragraph_id" not in columns:
-            conn.execute("ALTER TABLE rag_chunks ADD COLUMN paragraph_id TEXT")
-        if "paragraph_index" not in columns:
-            conn.execute("ALTER TABLE rag_chunks ADD COLUMN paragraph_index INTEGER")
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS rag_chunks_fts USING fts5(
-                chunk_id UNINDEXED,
-                document_id UNINDEXED,
-                document_title,
-                content
-            )
-            """
-        )
-        conn.commit()
 
 
 @lru_cache(maxsize=2)
@@ -204,11 +169,8 @@ def split_document_paragraph_chunks(document: DocumentDetail) -> list[tuple[str 
 
 
 def delete_document_index(document_id: str) -> None:
-    ensure_rag_tables()
     with connect() as conn:
-        conn.execute("DELETE FROM rag_chunks WHERE document_id = ?", (document_id,))
-        conn.execute("DELETE FROM rag_chunks_fts WHERE document_id = ?", (document_id,))
-        conn.commit()
+        conn.execute("DELETE FROM rag_chunks WHERE document_id = %s", (document_id,))
     try:
         chroma_collection().delete(where={"document_id": document_id})
     except Exception:
@@ -217,7 +179,6 @@ def delete_document_index(document_id: str) -> None:
 
 async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConfig | None = None) -> int:
     rag_config = runtime_rag_config(config)
-    ensure_rag_tables()
     delete_document_index(document.id)
     paragraph_chunks = split_document_paragraph_chunks(document)
     if not paragraph_chunks:
@@ -243,9 +204,9 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
         for chunk_id, chunk, metadata in zip(ids, chunks, metadatas):
             conn.execute(
                 """
-                INSERT OR REPLACE INTO rag_chunks
+                REPLACE INTO rag_chunks
                 (chunk_id, document_id, document_title, paragraph_id, paragraph_index, chunk_index, content, content_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     chunk_id,
@@ -258,14 +219,6 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
                     document.content_hash,
                 ),
             )
-            conn.execute(
-                """
-                INSERT INTO rag_chunks_fts (chunk_id, document_id, document_title, content)
-                VALUES (?, ?, ?, ?)
-                """,
-                (chunk_id, document.id, document.title, chunk),
-            )
-        conn.commit()
     return len(chunks)
 
 
@@ -311,35 +264,35 @@ async def vector_search(question: str, document_ids: list[str], config: RagRunti
 
 def fts_query_text(question: str) -> str:
     words = re.findall(r"[\w\u4e00-\u9fff]+", question)
-    return " OR ".join(words[:12]) or question
+    return " ".join(f"+{w}*" for w in words[:12]) or question
 
 
 def fts_search(question: str, document_ids: list[str]) -> list[RagSearchResult]:
-    ensure_rag_tables()
-    params: list[object] = [fts_query_text(question)]
+    query_text = fts_query_text(question)
     doc_filter = ""
+    args: list[object] = [query_text, query_text]
     if document_ids:
-        placeholders = ",".join("?" for _ in document_ids)
-        doc_filter = f" AND rag_chunks_fts.document_id IN ({placeholders})"
-        params.extend(document_ids)
+        placeholders = ",".join("%s" for _ in document_ids)
+        doc_filter = f" AND document_id IN ({placeholders})"
+        args.extend(document_ids)
+    args.append(VECTOR_TOP_K)
     with connect() as conn:
         rows = conn.execute(
             f"""
             SELECT
-                rag_chunks_fts.chunk_id,
-                rag_chunks_fts.document_id,
-                rag_chunks_fts.document_title,
-                rag_chunks.paragraph_id,
-                rag_chunks.paragraph_index,
-                rag_chunks_fts.content,
-                bm25(rag_chunks_fts) AS rank
-            FROM rag_chunks_fts
-            LEFT JOIN rag_chunks ON rag_chunks.chunk_id = rag_chunks_fts.chunk_id
-            WHERE rag_chunks_fts MATCH ?{doc_filter}
-            ORDER BY rank
-            LIMIT ?
+                chunk_id,
+                document_id,
+                document_title,
+                paragraph_id,
+                paragraph_index,
+                content,
+                MATCH(content, document_title) AGAINST(%s IN BOOLEAN MODE) AS rank
+            FROM rag_chunks
+            WHERE MATCH(content, document_title) AGAINST(%s IN BOOLEAN MODE){doc_filter}
+            ORDER BY rank DESC
+            LIMIT %s
             """,
-            [*params, VECTOR_TOP_K],
+            args,
         ).fetchall()
     items = [
         RagSearchResult(
@@ -350,8 +303,8 @@ def fts_search(question: str, document_ids: list[str]) -> list[RagSearchResult]:
             paragraph_index=row["paragraph_index"],
             chunk_index=int(str(row["chunk_id"]).split(":")[-1]),
             content=row["content"],
-            score=-float(row["rank"]),
-            source="bm25",
+            score=float(row["rank"]),
+            source="fulltext",
         )
         for row in rows
     ]

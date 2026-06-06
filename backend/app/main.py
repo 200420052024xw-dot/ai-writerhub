@@ -1,11 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.database import ensure_database, ensure_tables
 from app.routers import assistant, chat_history, config, documents, format, health, markdown, rag, translation
 from app.services.translation_job_service import mark_interrupted_jobs
 
 
 def create_app() -> FastAPI:
+    ensure_database()
+    ensure_tables()
     mark_interrupted_jobs()
     try:
         from app.services.document_service import purge_expired_trash

@@ -301,7 +301,7 @@ export type StoredDocumentSummary = {
   id: string;
   title: string;
   content_hash: string;
-  rag_status: "not_indexed" | "indexed" | "outdated" | "indexing" | "failed";
+  rag_status: "not_indexed" | "indexed" | "outdated" | "indexing" | "recognizing" | "failed";
   language: "zh" | "en";
   last_saved_at: string;
   last_indexed_at: string | null;
@@ -619,12 +619,14 @@ export async function uploadStoredDocument(payload: {
   api_key: string;
   base_url: string;
   model: string;
+  vision_model?: string;
 }): Promise<StoredDocumentDetail> {
   const formData = new FormData();
   formData.append("file", payload.file);
   formData.append("api_key", payload.api_key);
   formData.append("base_url", payload.base_url);
   formData.append("model", payload.model);
+  if (payload.vision_model) formData.append("vision_model", payload.vision_model);
 
   const response = await fetch(`${API_BASE_URL}/api/documents/upload`, {
     method: "POST",
@@ -633,6 +635,45 @@ export async function uploadStoredDocument(payload: {
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(detail || "Document upload failed");
+  }
+  return response.json();
+}
+
+export async function quickUploadDocument(file: File): Promise<StoredDocumentDetail> {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await fetch(`${API_BASE_URL}/api/documents/upload/quick`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || "Quick upload failed");
+  }
+  return response.json();
+}
+
+export async function recognizeDocument(payload: {
+  documentId: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+  vision_model?: string;
+}): Promise<StoredDocumentDetail> {
+  const formData = new FormData();
+  formData.append("api_key", payload.api_key);
+  formData.append("base_url", payload.base_url);
+  formData.append("model", payload.model);
+  if (payload.vision_model) formData.append("vision_model", payload.vision_model);
+
+  const response = await fetch(`${API_BASE_URL}/api/documents/${payload.documentId}/recognize`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(detail || "Document recognize failed");
   }
   return response.json();
 }

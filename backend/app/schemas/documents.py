@@ -7,7 +7,7 @@ from app.schemas.translation import GlossaryEntry
 
 
 DocumentFileType = Literal["txt", "md", "doc", "docx", "pdf", "ppt", "pptx"]
-RagStatus = Literal["not_indexed", "indexed", "outdated", "indexing", "failed"]
+RagStatus = Literal["not_indexed", "indexed", "outdated", "indexing", "recognizing", "failed"]
 DocumentParagraphType = Literal["title", "heading", "paragraph", "list", "table"]
 DocumentLanguage = Literal["zh", "en"]
 

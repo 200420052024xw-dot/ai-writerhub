@@ -9,6 +9,7 @@ class RuntimeModelConfig(BaseModel):
     api_key: str = Field(min_length=1)
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    vision_model: str | None = None
 
 
 def ensure_runtime_model_config(model_config: RuntimeModelConfig | None) -> RuntimeModelConfig:
@@ -142,7 +143,7 @@ async def call_vision_model(image_url: str, prompt: str, model_config: RuntimeMo
     model_config = ensure_runtime_model_config(model_config)
     url = chat_completions_url(model_config.base_url)
     payload = {
-        "model": model_config.model,
+        "model": model_config.vision_model or model_config.model,
         "messages": [
             {
                 "role": "user",

@@ -22,6 +22,8 @@ from app.services.document_service import (
     mark_document_indexing,
     permanent_delete_document,
     purge_expired_trash,
+    quick_upload_document,
+    recognize_document,
     restore_document,
     trash_document,
     update_document,
@@ -109,8 +111,30 @@ async def upload_document(
     api_key: str = Form(...),
     base_url: str = Form(...),
     model: str = Form(...),
+    vision_model: str | None = Form(None),
 ) -> DocumentDetail:
     return await upload_and_parse_document(
         file,
-        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model),
+        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model),
+    )
+
+
+@router.post("/documents/upload/quick", response_model=DocumentDetail)
+async def upload_quick(
+    file: UploadFile = File(...),
+) -> DocumentDetail:
+    return await quick_upload_document(file)
+
+
+@router.post("/documents/{document_id}/recognize", response_model=DocumentDetail)
+async def recognize(
+    document_id: str,
+    api_key: str = Form(...),
+    base_url: str = Form(...),
+    model: str = Form(...),
+    vision_model: str | None = Form(None),
+) -> DocumentDetail:
+    return await recognize_document(
+        document_id,
+        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model),
     )

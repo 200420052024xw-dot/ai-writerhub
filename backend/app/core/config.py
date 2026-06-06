@@ -22,6 +22,13 @@ class Settings(BaseSettings):
       alias="RAG_RERANK_MODEL_PATH",
     )
 
+    # MySQL
+    db_host: str = Field(default="localhost", alias="DB_HOST")
+    db_port: int = Field(default=3306, alias="DB_PORT")
+    db_user: str = Field(default="root", alias="DB_USER")
+    db_password: str = Field(default="root", alias="DB_PASSWORD")
+    db_name: str = Field(default="writerhub", alias="DB_NAME")
+
     model_config = SettingsConfigDict(
       env_file=".env",
       env_file_encoding="utf-8",

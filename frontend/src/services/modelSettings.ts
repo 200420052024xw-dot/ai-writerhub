@@ -5,6 +5,7 @@ export type ModelProviderPreset = {
   name: string;
   baseUrl: string;
   defaultModel: string;
+  visionModel: string;
   note: string;
 };
 
@@ -13,6 +14,7 @@ export type ModelSettings = {
   apiKey: string;
   baseUrl: string;
   defaultModel: string;
+  visionModel: string;
 };
 
 export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
@@ -21,6 +23,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
     defaultModel: "gpt-5.5",
+    visionModel: "gpt-5.5",
     note: "OpenAI 官方接口",
   },
   {
@@ -28,6 +31,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "DeepSeek",
     baseUrl: "https://api.deepseek.com",
     defaultModel: "deepseek-chat",
+    visionModel: "deepseek-chat",
     note: "DeepSeek 官方接口",
   },
   {
@@ -35,6 +39,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "通义千问",
     baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     defaultModel: "qwen-plus",
+    visionModel: "qwen-vl-max",
     note: "阿里云官方接口",
   },
   {
@@ -42,6 +47,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "智谱 GLM",
     baseUrl: "https://open.bigmodel.cn/api/paas/v4",
     defaultModel: "glm-5.1",
+    visionModel: "glm-5v-flash",
     note: "智谱官方接口",
   },
   {
@@ -49,6 +55,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "火山方舟",
     baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
     defaultModel: "doubao-seed-2-0-pro-260215",
+    visionModel: "doubao-seed-2-0-pro-260215",
     note: "火山方舟官方接口",
   },
   {
@@ -56,6 +63,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "Xiaomi MiMo",
     baseUrl: "https://api.xiaomimimo.com/v1",
     defaultModel: "mimo-v2.5-pro",
+    visionModel: "mimo-v2.5-pro",
     note: "Xiaomi MiMo官方接口",
   },
   {
@@ -63,6 +71,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "MiniMax",
     baseUrl: "https://api.minimaxi.com/v1",
     defaultModel: "MiniMax-M2.7",
+    visionModel: "MiniMax-M2.7",
     note: "MiniMax官方接口",
   },
   {
@@ -70,6 +79,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     name: "自定义",
     baseUrl: "",
     defaultModel: "",
+    visionModel: "",
     note: "手动填写 Base URL 和模型名称",
   },
 ];
@@ -81,6 +91,7 @@ export const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
   defaultModel: "deepseek-chat",
+  visionModel: "deepseek-chat",
 };
 
 export function loadModelSettings(): ModelSettings {
