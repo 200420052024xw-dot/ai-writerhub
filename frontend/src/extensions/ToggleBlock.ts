@@ -68,8 +68,9 @@ export const ToggleBlock = Node.create({
 
   addNodeView() {
     return ReactNodeViewRenderer((props) => {
-      const title = props.node.attrs.title || "展开查看详情";
+      const title: string = props.node.attrs.title || "";
       const open = props.node.attrs.open !== false;
+      const isDefaultTitle = !title || title === "展开查看详情";
 
       return React.createElement(
         NodeViewWrapper,
@@ -91,14 +92,20 @@ export const ToggleBlock = Node.create({
             },
             React.createElement("span", null),
           ),
-          React.createElement("input", {
-            className: "toggle-title-input",
-            value: title,
-            onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
-              props.updateAttributes({ title: event.target.value }),
-            onClick: (event: React.MouseEvent<HTMLInputElement>) => event.stopPropagation(),
-            placeholder: "折叠标题",
-          }),
+          open
+            ? React.createElement("input", {
+                className: "toggle-title-input",
+                value: isDefaultTitle ? "" : title,
+                onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
+                  props.updateAttributes({ title: event.target.value }),
+                onClick: (event: React.MouseEvent<HTMLInputElement>) => event.stopPropagation(),
+                placeholder: "展开查看详情",
+              })
+            : React.createElement(
+                "span",
+                { className: "toggle-title-text", style: { color: isDefaultTitle ? "#94a3b8" : "#1e293b" } },
+                isDefaultTitle ? "展开查看详情" : title,
+              ),
         ),
         React.createElement(NodeViewContent, {
           as: "div",

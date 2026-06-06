@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, Check, CheckCircle2, FileText, History, Loader2, MoreHorizontal, Pencil, Save, Send, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Bookmark, Check, CheckCircle2, FileText, History, Loader2, MessageSquarePlus, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Save, Send, SlidersHorizontal, Trash2 } from "lucide-react";
 import {
   createKnowledgeConversation,
   createStoredDocument,
@@ -97,6 +97,7 @@ export function DocumentsPage() {
   const [menuPos, setMenuPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 });
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   useLayoutEffect(() => {
     if (!historyMenuId) return;
@@ -120,16 +121,6 @@ export function DocumentsPage() {
   const latestAnswer = useMemo(() => chatTurns.at(-1)?.answer ?? answer, [answer, chatTurns]);
   const ragSettings = loadRagSettings();
   const ragStrategyLabel = `${ragSettings.embeddingSource === "api" ? "API 向量模型" : "默认向量模型"} / ${ragSettings.recallStrategy === "hybrid" ? "BM25 + Vector 混合召回" : "默认召回"}${ragSettings.enableRerank ? " / 启用重排" : ""}`;
-  const sourceGroups = useMemo<SourceGroup[]>(() => {
-    const groups = new Map<string, SourceGroup>();
-    searchResults.forEach((result, index) => {
-      const key = result.document_id || result.document_title;
-      const group = groups.get(key) || { document_id: result.document_id, document_title: result.document_title, items: [] };
-      group.items.push({ index: index + 1, result });
-      groups.set(key, group);
-    });
-    return [...groups.values()];
-  }, [searchResults]);
 
   const refreshDocuments = async () => {
     try {
@@ -438,10 +429,11 @@ export function DocumentsPage() {
     <section className="page documents-page">
       {message && <div className="copy-toast done">{message}</div>}
       <div className="documents-layout">
+        {!sidebarCollapsed && (
         <aside className="panel kb-left-panel">
           <div className="side-section">
             <div className="panel-title">
-              <History size={18} />
+              <History size={16} />
               <h2>历史对话</h2>
             </div>
             {historyItems.length === 0 ? (
@@ -536,28 +528,32 @@ export function DocumentsPage() {
               <div className="knowledge-empty compact">提问后将在这里显示相关片段</div>
             ) : (
               <div className="search-result-list">
-                {sourceGroups.map((group) => (
-                  <button className="search-result source-only" key={group.document_id || group.document_title} onClick={() => setCitationGroup(group)} type="button">
-                    <div className="search-result-left">
-                      <span className="search-file-icon">
-                        <FileText size={14} />
-                      </span>
-                      <div className="search-file-main">
-                        <span className="search-file-name">{group.document_title}</span>
-                      </div>
+                {searchResults.slice(0, 5).map((result, index) => (
+                  <button className="search-result chunk-item" key={result.chunk_id || index} onClick={() => setCitationResult({ index: index + 1, result })} type="button">
+                    <span className="chunk-index">{index + 1}</span>
+                    <div className="chunk-info">
+                      <span className="chunk-file-name">{result.document_title}</span>
+                      <span className="chunk-preview">{result.content.slice(0, 60)}{result.content.length > 60 ? "..." : ""}</span>
                     </div>
-                    <span className="search-source-count">{group.items.map((item) => `[${item.index}]`).join(" ")}</span>
+                    <span className="chunk-score">{Math.round(result.score * 100)}%</span>
                   </button>
                 ))}
               </div>
             )}
           </div>
         </aside>
+        )}
 
         <article className="panel qa-panel">
           <div className="qa-controls">
             <div className="qa-controls-left">
-              {selectingChats ? (
+              <button className="kb-icon-btn" onClick={() => setSidebarCollapsed((c) => !c)} title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} type="button">
+                {sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+              </button>
+              <button className="kb-icon-btn" onClick={() => void startNewConversation()} title="新建对话" type="button">
+                <MessageSquarePlus size={18} />
+              </button>
+              {selectingChats && (
                 <>
                   <button
                     className="select-all-btn"
@@ -575,79 +571,10 @@ export function DocumentsPage() {
                     取消
                   </button>
                 </>
-              ) : (
-                <button className="chat-select-secondary" onClick={() => void startNewConversation()} type="button">
-                  新建对话
-                </button>
               )}
             </div>
 
-            {!selectingChats ? (
-              <div className="doc-select-wrapper" ref={docSelectRef}>
-              <button className="doc-select-btn" onClick={() => setShowDocLibrary((current) => !current)} type="button">
-                <SlidersHorizontal size={15} />
-                选择文档
-                <span className="doc-count">{selectedDocs.size}/{availableDocuments.length}</span>
-              </button>
-              {showDocLibrary && (
-                <div className="doc-dropdown">
-                  <div className="doc-dropdown-header">
-                    <span>点击解析/更新将按当前策略执行：{ragStrategyLabel}</span>
-                  </div>
-                  <div className="doc-dropdown-list">
-                    {availableDocuments.length === 0 && <div className="file-selector-empty">暂无已解析、待更新或可重试文档</div>}
-                    {availableDocuments.map((doc) => {
-                      const isSelected = selectedDocs.has(doc.id);
-                      const canUse = doc.rag_status === "indexed";
-                      const isFailed = doc.rag_status === "failed";
-                      const isIndexing = indexingId === doc.id;
-                      return (
-                        <div
-                          className={`doc-dropdown-item${!canUse ? " outdated" : ""}${isSelected ? " selected" : ""}${isIndexing ? " indexing" : ""}`}
-                          key={doc.id}
-                          onClick={() => {
-                            if (isIndexing) return;
-                            if (canUse) toggleDoc(doc.id);
-                            else void runIndex(doc.id);
-                          }}
-                        >
-                          <span className="doc-icon">
-                            <FileText size={16} />
-                          </span>
-                          <span className="doc-info">
-                            <span className="doc-name">{doc.title || "无标题文档"}</span>
-                            <span className="doc-meta">
-                              <span className={`document-language-badge compact ${doc.language}`}>{doc.language === "zh" ? "中文" : "英文"}</span>
-                              {isIndexing ? "正在解析并更新索引..." : canUse ? "点击选择该文档" : isFailed ? "上次解析失败，点击重试" : "点击更新后将自动选中"}
-                            </span>
-                          </span>
-                          {!canUse && <span className={`status-outdated${isFailed ? " failed" : ""}${isIndexing ? " indexing" : ""}`}>{isIndexing ? "解析中" : isFailed ? "解析失败" : "待更新"}</span>}
-                          {!canUse && (
-                            <button
-                              className="doc-update-link"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (isIndexing) return;
-                                void runIndex(doc.id);
-                              }}
-                              disabled={isIndexing}
-                              type="button"
-                            >
-                              {isIndexing ? <Loader2 className="spin" size={13} /> : isFailed ? "重试解析" : "立即更新"}
-                            </button>
-                          )}
-                          <span className={`custom-checkbox${isSelected ? " checked" : ""}`}>
-                            {isSelected && <Check size={12} />}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="doc-dropdown-footer">已选择 {selectedDocs.size} / {availableDocuments.length} 个文档</div>
-                </div>
-              )}
-            </div>
-            ) : (
+            {selectingChats ? (
               <button
                 className="save-as-doc-btn"
                 disabled={selectedTurnIds.size === 0}
@@ -657,6 +584,71 @@ export function DocumentsPage() {
                 <Save size={14} />
                 保存为文档 ({selectedTurnIds.size})
               </button>
+            ) : (
+              <div className="doc-select-wrapper" ref={docSelectRef}>
+                <button className="doc-select-btn" onClick={() => setShowDocLibrary((current) => !current)} type="button">
+                  <SlidersHorizontal size={15} />
+                  选择文档
+                  <span className="doc-count">{selectedDocs.size}/{availableDocuments.length}</span>
+                </button>
+                {showDocLibrary && (
+                  <div className="doc-dropdown">
+                    <div className="doc-dropdown-header">
+                      <span>点击解析/更新将按当前策略执行：{ragStrategyLabel}</span>
+                    </div>
+                    <div className="doc-dropdown-list">
+                      {availableDocuments.length === 0 && <div className="file-selector-empty">暂无已解析、待更新或可重试文档</div>}
+                      {availableDocuments.map((doc) => {
+                        const isSelected = selectedDocs.has(doc.id);
+                        const canUse = doc.rag_status === "indexed";
+                        const isFailed = doc.rag_status === "failed";
+                        const isIndexing = indexingId === doc.id;
+                        return (
+                          <div
+                            className={`doc-dropdown-item${!canUse ? " outdated" : ""}${isSelected ? " selected" : ""}${isIndexing ? " indexing" : ""}`}
+                            key={doc.id}
+                            onClick={() => {
+                              if (isIndexing) return;
+                              if (canUse) toggleDoc(doc.id);
+                              else void runIndex(doc.id);
+                            }}
+                          >
+                            <span className="doc-icon">
+                              <FileText size={16} />
+                            </span>
+                            <span className="doc-info">
+                              <span className="doc-name">{doc.title || "无标题文档"}</span>
+                              <span className="doc-meta">
+                                <span className={`document-language-badge compact ${doc.language}`}>{doc.language === "zh" ? "中文" : "英文"}</span>
+                                {isIndexing ? "正在解析并更新索引..." : canUse ? "点击选择该文档" : isFailed ? "上次解析失败，点击重试" : "点击更新后将自动选中"}
+                              </span>
+                            </span>
+                            {!canUse && <span className={`status-outdated${isFailed ? " failed" : ""}${isIndexing ? " indexing" : ""}`}>{isIndexing ? "解析中" : isFailed ? "解析失败" : "待更新"}</span>}
+                            {!canUse && (
+                              <button
+                                className="doc-update-link"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  if (isIndexing) return;
+                                  void runIndex(doc.id);
+                                }}
+                                disabled={isIndexing}
+                                type="button"
+                              >
+                                {isIndexing ? <Loader2 className="spin" size={13} /> : isFailed ? "重试解析" : "立即更新"}
+                              </button>
+                            )}
+                            <span className={`custom-checkbox${isSelected ? " checked" : ""}`}>
+                              {isSelected && <Check size={12} />}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="doc-dropdown-footer">已选择 {selectedDocs.size} / {availableDocuments.length} 个文档</div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
