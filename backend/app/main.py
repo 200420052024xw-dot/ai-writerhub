@@ -83,14 +83,16 @@ def create_app() -> FastAPI:
     if static_dir:
         static_path = Path(static_dir)
         if static_path.is_dir():
+            # 挂载整个 dist 目录为静态文件（assets、图片等都能直接访问）
+            app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static-frontend")
 
-            @app.get("/{full_path:path}")
-            async def serve_spa(request: Request, full_path: str):
-                """SPA fallback — 非 /api 请求返回 index.html，支持前端路由"""
-                file_path = static_path / full_path
-                if file_path.is_file():
-                    return FileResponse(str(file_path))
-                return FileResponse(str(static_path / "index.html"))
+            # SPA fallback middleware：静态文件返回 404 时回退到 index.html
+            @app.middleware("http")
+            async def spa_fallback(request: Request, call_next):
+                response = await call_next(request)
+                if response.status_code == 404 and not request.url.path.startswith("/api"):
+                    return FileResponse(str(static_path / "index.html"))
+                return response
 
     return app
 
