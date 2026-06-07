@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { loginUser, registerUser, resetPassword, type AuthUser } from "../services/api";
 import { CaptchaCanvas } from "../components/CaptchaCanvas";
+import leftPicture from "../../public/left_picture.png";
 
 type AuthPageProps = {
   onAuthenticated: (user: AuthUser) => void;
@@ -175,7 +176,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
         </div>
 
         <div className="hero-illustration hero-illustration-image" aria-hidden="true">
-          <img alt="" src="/left_picture.png" />
+          <img alt="" src={leftPicture} />
         </div>
       </section>
 
