@@ -20,12 +20,13 @@ export type AuthUser = {
 
 async function authJson(response: Response): Promise<AuthUser> {
   if (!response.ok) {
+    const text = await response.text();
     let message = "请求失败";
     try {
-      const data = await response.json();
+      const data = JSON.parse(text);
       message = typeof data.detail === "string" ? data.detail : message;
     } catch {
-      message = (await response.text()) || message;
+      message = text || message;
     }
     throw new Error(message);
   }
@@ -380,12 +381,13 @@ export async function testFormatModel(payload: {
   });
 
   if (!response.ok) {
+    const text = await response.text();
     let message = "Model connection test failed";
     try {
-      const data = await response.json();
+      const data = JSON.parse(text);
       message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
     } catch {
-      message = await response.text();
+      message = text;
     }
     throw new Error(message || "Model connection test failed");
   }

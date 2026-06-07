@@ -951,12 +951,13 @@ async function streamAssistantReply({
   }
 
   if (!response.ok || !response.body) {
+    const text = await response.text();
     let message = "模型请求失败";
     try {
-      const data = await response.json();
+      const data = JSON.parse(text);
       message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
     } catch {
-      message = await response.text();
+      message = text;
     }
     throw new Error(message || "模型请求失败");
   }
