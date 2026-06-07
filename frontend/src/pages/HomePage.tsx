@@ -22,6 +22,7 @@ import {
   deleteStoredDocument,
   getStoredDocument,
   indexStoredDocument,
+  invalidateDocumentListCache,
   listStoredDocuments,
   quickUploadDocument,
   recognizeDocument,
@@ -29,6 +30,7 @@ import {
   type StoredDocumentDetail,
   type StoredDocumentSummary,
 } from "../services/api";
+import { userStorage } from "../services/userStorage";
 import { loadModelSettings } from "../services/modelSettings";
 
 type HomePageProps = {
@@ -126,10 +128,10 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     window.setTimeout(() => setMessage(""), 2200);
   };
 
-  const refresh = async () => {
+  const refresh = async (force = false) => {
     setLoading(true);
     try {
-      const response = await listStoredDocuments();
+      const response = await listStoredDocuments(force);
       setDocuments(response.documents);
     } catch {
       showMessage("文档列表加载失败");
@@ -261,12 +263,12 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   const deleteDocument = async (documentId: string) => {
     try {
       await deleteStoredDocument(documentId);
-      ["writerhub.editorDocument", "writerhub.translateDocument", "writerhub.formatDocument", "writerhub.currentDocument"].forEach((key) => {
-        const raw = window.localStorage.getItem(key);
+      ["editorDocument", "translateDocument", "formatDocument", "currentDocument"].forEach((key) => {
+        const raw = userStorage.getItem(key);
         if (!raw) return;
         try {
           const current = JSON.parse(raw) as StoredDocumentDetail;
-          if (current.id === documentId) window.localStorage.removeItem(key);
+          if (current.id === documentId) userStorage.removeItem(key);
         } catch {
           // Ignore invalid local cache.
         }

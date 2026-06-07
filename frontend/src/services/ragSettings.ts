@@ -12,7 +12,7 @@ export type RagSettings = {
   rerankModelPath: string;
 };
 
-const STORAGE_KEY = "writerhub.ragSettings";
+const STORAGE_KEY = "ragSettings";
 
 export const DEFAULT_RAG_SETTINGS: RagSettings = {
   embeddingSource: "local",
@@ -26,7 +26,7 @@ export const DEFAULT_RAG_SETTINGS: RagSettings = {
 };
 
 export function loadRagSettings(): RagSettings {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const raw = userStorage.getItem(STORAGE_KEY);
   if (!raw) return DEFAULT_RAG_SETTINGS;
   try {
     return { ...DEFAULT_RAG_SETTINGS, ...JSON.parse(raw) } as RagSettings;
@@ -36,7 +36,7 @@ export function loadRagSettings(): RagSettings {
 }
 
 export function saveRagSettings(settings: RagSettings) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  userStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
 
 export function toRagRuntimeConfig(settings: RagSettings) {
@@ -51,3 +51,4 @@ export function toRagRuntimeConfig(settings: RagSettings) {
     rerank_model_path: settings.rerankModelPath,
   };
 }
+import { userStorage } from "./userStorage";

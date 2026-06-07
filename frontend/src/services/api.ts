@@ -1,6 +1,99 @@
 // 生产构建时为空字符串（同源部署），开发时由 vite.config.ts 注入后端地址
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
+export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const response = await window.fetch(input, { ...init, credentials: "include" });
+  if (response.status === 401) {
+    window.dispatchEvent(new Event("writerhub:unauthorized"));
+  }
+  return response;
+}
+
+const fetch = apiFetch;
+
+export type AuthUser = {
+  id: string;
+  username: string;
+  nickname: string;
+  email: string | null;
+};
+
+async function authJson(response: Response): Promise<AuthUser> {
+  if (!response.ok) {
+    let message = "请求失败";
+    try {
+      const data = await response.json();
+      message = typeof data.detail === "string" ? data.detail : message;
+    } catch {
+      message = (await response.text()) || message;
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export async function getCurrentUser(): Promise<AuthUser> {
+  return authJson(await fetch(`${API_BASE_URL}/api/auth/me`));
+}
+
+export async function registerUser(payload: {
+  username: string;
+  nickname: string;
+  password: string;
+  email?: string | null;
+}): Promise<AuthUser> {
+  return authJson(await fetch(`${API_BASE_URL}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }));
+}
+
+export async function loginUser(payload: { username: string; password: string }): Promise<AuthUser> {
+  return authJson(await fetch(`${API_BASE_URL}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }));
+}
+
+export async function logoutUser(): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/logout`, { method: "POST" });
+  if (!response.ok) throw new Error("退出失败");
+}
+
+export async function updateProfile(nickname: string): Promise<AuthUser> {
+  return authJson(await fetch(`${API_BASE_URL}/api/account/profile`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nickname }),
+  }));
+}
+
+export async function updatePassword(oldPassword: string, newPassword: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/account/password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || "修改密码失败");
+  }
+}
+
+export async function resetPassword(payload: { username: string; email: string; new_password: string }): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || "重置密码失败");
+  }
+}
+
 export type HealthResponse = {
   status: "ok";
   service: string;
@@ -333,12 +426,23 @@ export type StoredDocumentDetail = StoredDocumentSummary & {
   glossary: GlossaryEntry[];
 };
 
-export async function listStoredDocuments(): Promise<{ documents: StoredDocumentSummary[] }> {
+let _documentListCache: StoredDocumentSummary[] | null = null;
+
+export function invalidateDocumentListCache() {
+  _documentListCache = null;
+}
+
+export async function listStoredDocuments(forceRefresh = false): Promise<{ documents: StoredDocumentSummary[] }> {
+  if (!forceRefresh && _documentListCache) {
+    return { documents: _documentListCache };
+  }
   const response = await fetch(`${API_BASE_URL}/api/documents`);
   if (!response.ok) {
     throw new Error("Document list failed");
   }
-  return response.json();
+  const data = await response.json();
+  _documentListCache = data.documents;
+  return data;
 }
 
 export async function getStoredDocument(documentId: string): Promise<StoredDocumentDetail> {

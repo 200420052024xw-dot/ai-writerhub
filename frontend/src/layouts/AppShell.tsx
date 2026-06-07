@@ -1,17 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Plus, Search, Settings, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Plus, Settings, X } from "lucide-react";
 import { EditorPage } from "../pages/EditorPage";
 import { TranslatePage } from "../pages/TranslatePage";
 import { FormatPage } from "../pages/FormatPage";
 import { DocumentsPage } from "../pages/DocumentsPage";
 import { HomePage } from "../pages/HomePage";
 import { SettingsPage } from "../pages/SettingsPage";
+import { AccountMenu } from "../components/AccountMenu";
 import { loadModelSettings } from "../services/modelSettings";
-import { createStoredDocument, getActiveTranslationJobs, listStoredDocuments, getStoredDocument, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
+import { createStoredDocument, getActiveTranslationJobs, invalidateDocumentListCache, listStoredDocuments, getStoredDocument, type AuthUser, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
+import { userStorage } from "../services/userStorage";
 import type { HealthState, NavigationKey } from "../types";
 
 type AppShellProps = {
   healthState: HealthState;
+  user: AuthUser;
+  onLogout: () => Promise<void>;
+  onUserChange: (user: AuthUser) => void;
 };
 
 const navItems = [
@@ -33,7 +38,7 @@ const pageTitles: Record<NavigationKey, string> = {
 };
 
 function loadCachedDocument(key: string): StoredDocumentDetail | null {
-  const raw = window.localStorage.getItem(key);
+  const raw = userStorage.getItem(key);
   if (!raw) return null;
   try {
     return JSON.parse(raw) as StoredDocumentDetail;
@@ -42,27 +47,28 @@ function loadCachedDocument(key: string): StoredDocumentDetail | null {
   }
 }
 
-export function AppShell({ healthState }: AppShellProps) {
+export function AppShell({ healthState, user, onLogout, onUserChange }: AppShellProps) {
   const [activePage, setActivePage] = useState<NavigationKey>("home");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [modelSettings, setModelSettings] = useState(() => loadModelSettings());
   const [editorTitle, setEditorTitle] = useState("");
+  const [editorStats, setEditorStats] = useState({ wordCount: 0, charCount: 0 });
   const [saveState, setSaveState] = useState<{ label: string; status: "idle" | "saving" | "saved" | "failed" }>({
     label: "已保存 10:24",
     status: "saved",
   });
-  const [editorDocument, setEditorDocument] = useState<StoredDocumentDetail | null>(() => loadCachedDocument("writerhub.editorDocument"));
-  const [translateDocument, setTranslateDocument] = useState<StoredDocumentDetail | null>(() => loadCachedDocument("writerhub.translateDocument"));
-  const [formatDocument, setFormatDocument] = useState<StoredDocumentDetail | null>(() => loadCachedDocument("writerhub.formatDocument"));
+  const [editorDocument, setEditorDocument] = useState<StoredDocumentDetail | null>(() => loadCachedDocument("editorDocument"));
+  const [translateDocument, setTranslateDocument] = useState<StoredDocumentDetail | null>(() => loadCachedDocument("translateDocument"));
+  const [formatDocument, setFormatDocument] = useState<StoredDocumentDetail | null>(() => loadCachedDocument("formatDocument"));
   const [showFileSelector, setShowFileSelector] = useState(false);
   const [fileList, setFileList] = useState<StoredDocumentSummary[]>([]);
   const [fileListLoading, setFileListLoading] = useState(false);
   const [translationJobs, setTranslationJobs] = useState<TranslationJob[]>([]);
 
-  const loadFileList = async () => {
-    setFileListLoading(true);
+  const loadFileList = async (force = false) => {
+    setFileListLoading(!force);
     try {
-      const result = await listStoredDocuments();
+      const result = await listStoredDocuments(force);
       setFileList(result.documents);
     } catch {
       setFileList([]);
@@ -86,13 +92,13 @@ export function AppShell({ healthState }: AppShellProps) {
       if (activePage === "editor") {
         setEditorDocument(detail);
         setEditorTitle(detail.title.trim());
-        window.localStorage.setItem("writerhub.editorDocument", JSON.stringify(detail));
+        userStorage.setItem("editorDocument", JSON.stringify(detail));
       } else if (activePage === "translate") {
         setTranslateDocument(detail);
-        window.localStorage.setItem("writerhub.translateDocument", JSON.stringify(detail));
+        userStorage.setItem("translateDocument", JSON.stringify(detail));
       } else if (activePage === "format") {
         setFormatDocument(detail);
-        window.localStorage.setItem("writerhub.formatDocument", JSON.stringify(detail));
+        userStorage.setItem("formatDocument", JSON.stringify(detail));
       }
       setShowFileSelector(false);
     } catch {
@@ -103,9 +109,10 @@ export function AppShell({ healthState }: AppShellProps) {
   const handleCreateDocumentFromSelector = async () => {
     try {
       const document = await createStoredDocument({ title: "", content: "" });
+      invalidateDocumentListCache();
       setEditorDocument({ ...document, title: "" });
       setEditorTitle("");
-      window.localStorage.setItem("writerhub.editorDocument", JSON.stringify({ ...document, title: "" }));
+      userStorage.setItem("editorDocument", JSON.stringify({ ...document, title: "" }));
       setShowFileSelector(false);
       setActivePage("editor");
     } catch {
@@ -118,7 +125,7 @@ export function AppShell({ healthState }: AppShellProps) {
     setEditorDocument((current) => {
       if (!current) return current;
       const next = { ...current, title };
-      window.localStorage.setItem("writerhub.editorDocument", JSON.stringify(next));
+      userStorage.setItem("editorDocument", JSON.stringify(next));
       return next;
     });
   };
@@ -146,13 +153,13 @@ export function AppShell({ healthState }: AppShellProps) {
       if (page === "editor") {
         setEditorDocument(document);
         setEditorTitle(document.title.trim());
-        window.localStorage.setItem("writerhub.editorDocument", JSON.stringify(document));
+        userStorage.setItem("editorDocument", JSON.stringify(document));
       } else if (page === "translate") {
         setTranslateDocument(document);
-        window.localStorage.setItem("writerhub.translateDocument", JSON.stringify(document));
+        userStorage.setItem("translateDocument", JSON.stringify(document));
       } else if (page === "format") {
         setFormatDocument(document);
-        window.localStorage.setItem("writerhub.formatDocument", JSON.stringify(document));
+        userStorage.setItem("formatDocument", JSON.stringify(document));
       }
       setActivePage(page);
     };
@@ -175,10 +182,11 @@ export function AppShell({ healthState }: AppShellProps) {
           documentTitle={editorDocument?.title}
           onTitleChange={handleEditorTitleChange}
           onSaveStateChange={setSaveState}
+          onStatsChange={setEditorStats}
           onDocumentSaved={(document) => {
             setEditorDocument((current) => {
               if (!current || current.id !== document.id) return current;
-              window.localStorage.setItem("writerhub.editorDocument", JSON.stringify(document));
+              userStorage.setItem("editorDocument", JSON.stringify(document));
               return document;
             });
           }}
@@ -240,17 +248,17 @@ export function AppShell({ healthState }: AppShellProps) {
       setEditorDocument((current) => {
         if (current?.id !== documentId) return current;
         setEditorTitle("");
-        window.localStorage.removeItem("writerhub.editorDocument");
+        userStorage.removeItem("editorDocument");
         return null;
       });
       setTranslateDocument((current) => {
         if (current?.id !== documentId) return current;
-        window.localStorage.removeItem("writerhub.translateDocument");
+        userStorage.removeItem("translateDocument");
         return null;
       });
       setFormatDocument((current) => {
         if (current?.id !== documentId) return current;
-        window.localStorage.removeItem("writerhub.formatDocument");
+        userStorage.removeItem("formatDocument");
         return null;
       });
       setFileList((current) => current.filter((document) => document.id !== documentId));
@@ -378,17 +386,12 @@ export function AppShell({ healthState }: AppShellProps) {
             </div>
           </div>
 
-          <div className="search-box">
-            <Search size={18} />
-            <span>搜索文档 / 内容 / 功能</span>
-            <kbd>⌘ K</kbd>
-          </div>
-
           <div className="topbar-actions">
             <div className={`health-pill ${modelStatusClass}`} title={healthState === "online" ? "后端在线" : "后端未连接"}>
               <span className="health-dot" />
               {modelStatusText}
             </div>
+            <AccountMenu onLogout={onLogout} onUserChange={onUserChange} user={user} />
           </div>
         </header>
 
@@ -396,9 +399,7 @@ export function AppShell({ healthState }: AppShellProps) {
 
         {activePage === "editor" && (
           <footer className="statusbar">
-            <span>字数 24,515</span>
-            <span>字符 312</span>
-            <span>预计阅读 1 分钟</span>
+            <span>字符 {editorStats.charCount.toLocaleString()}</span>
             <span>Markdown</span>
             <span className="status-dot" />
           </footer>

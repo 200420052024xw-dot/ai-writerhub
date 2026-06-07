@@ -30,7 +30,8 @@ import {
   Highlighter,
   Send,
 } from "lucide-react";
-import { API_BASE_URL } from "../services/api";
+import { API_BASE_URL, apiFetch } from "../services/api";
+import { userStorage } from "../services/userStorage";
 import {
   getDocumentAssistantHistory,
   saveDocumentAssistantHistory,
@@ -928,7 +929,7 @@ async function streamAssistantReply({
 
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/api/assistant/chat`, {
+    response = await apiFetch(`${API_BASE_URL}/api/assistant/chat`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -997,6 +998,7 @@ type EditorPageProps = {
   onTitleChange?: (title: string) => void;
   onDocumentSaved?: (document: StoredDocumentDetail) => void;
   onSaveStateChange?: (state: { label: string; status: "idle" | "saving" | "saved" | "failed" }) => void;
+  onStatsChange?: (stats: { wordCount: number; charCount: number }) => void;
 };
 
 export function EditorPage({
@@ -1007,6 +1009,7 @@ export function EditorPage({
   onDocumentSaved,
   onSaveStateChange,
   onTitleChange,
+  onStatsChange,
 }: EditorPageProps) {
   const [documentTitle, setDocumentTitle] = useState("");
   const [copyState, setCopyState] = useState<CopyState>("idle");
@@ -1017,8 +1020,8 @@ export function EditorPage({
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantStreaming, setAssistantStreaming] = useState(false);
-  const [assistantWidth, setAssistantWidth] = useState(() => Number(localStorage.getItem("writerhub.editorAssistantWidth") || 300));
-  const [assistantVisible, setAssistantVisible] = useState(() => localStorage.getItem("writerhub.editorAssistantVisible") !== "false");
+  const [assistantWidth, setAssistantWidth] = useState(() => Number(userStorage.getItem("editorAssistantWidth") || 300));
+  const [assistantVisible, setAssistantVisible] = useState(() => userStorage.getItem("editorAssistantVisible") !== "false");
   const resizingAssistantRef = useRef(false);
   const markdownPastePromptedRef = useRef(false);
   const loadingDocumentRef = useRef(false);
@@ -1051,11 +1054,25 @@ export function EditorPage({
       StructureFold,
     ],
     content: initialContent,
-    onCreate: ({ editor }) => setBodyEmpty(isEditorBodyEmpty(editor)),
+    onCreate: ({ editor }) => {
+      setBodyEmpty(isEditorBodyEmpty(editor));
+      if (onStatsChange) {
+        const text = editor.state.doc.textContent;
+        const charCount = text.replace(/\s/g, "").length;
+        const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+        onStatsChange({ wordCount, charCount });
+      }
+    },
     onUpdate: ({ editor }) => {
       setBodyEmpty(isEditorBodyEmpty(editor));
       if (!loadingDocumentRef.current) {
         setContentVersion((version) => version + 1);
+      }
+      if (onStatsChange) {
+        const text = editor.state.doc.textContent;
+        const charCount = text.replace(/\s/g, "").length;
+        const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+        onStatsChange({ wordCount, charCount });
       }
     },
     onSelectionUpdate: () => setSelectionVersion((version) => version + 1),
@@ -1143,8 +1160,8 @@ export function EditorPage({
   }, [assistantMessages, documentId]);
 
   useEffect(() => {
-    localStorage.setItem("writerhub.editorAssistantWidth", String(assistantWidth));
-    localStorage.setItem("writerhub.editorAssistantVisible", String(assistantVisible));
+    userStorage.setItem("editorAssistantWidth", String(assistantWidth));
+    userStorage.setItem("editorAssistantVisible", String(assistantVisible));
   }, [assistantWidth, assistantVisible]);
 
   useEffect(() => {

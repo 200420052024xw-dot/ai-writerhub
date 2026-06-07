@@ -34,7 +34,10 @@ async def save_knowledge_conversation(payload: KnowledgeConversationCreate) -> K
 
 @router.patch("/knowledge/conversations/{conversation_id}", response_model=KnowledgeConversation)
 async def rename_conversation(conversation_id: str, payload: KnowledgeConversationUpdate) -> KnowledgeConversation:
-    return rename_knowledge_conversation(conversation_id, payload.title)
+    try:
+        return rename_knowledge_conversation(conversation_id, payload.title)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.put("/knowledge/conversations/{conversation_id}", response_model=KnowledgeConversation)
@@ -47,7 +50,10 @@ async def update_conversation_content(conversation_id: str, payload: KnowledgeCo
 
 @router.delete("/knowledge/conversations/{conversation_id}")
 async def remove_conversation(conversation_id: str) -> dict[str, bool]:
-    delete_knowledge_conversation(conversation_id)
+    try:
+        delete_knowledge_conversation(conversation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"ok": True}
 
 

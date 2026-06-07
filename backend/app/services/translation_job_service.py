@@ -1,8 +1,9 @@
 import asyncio
 import json
 import uuid
-from datetime import UTC, datetime
 
+from app.core.database import mysql_datetime, parse_database_datetime
+from app.services.auth_service import current_user_id
 from app.schemas.translation import (
     TranslationChunk,
     TranslationGranularity,
@@ -36,7 +37,7 @@ MAX_ATTEMPTS = 3
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return mysql_datetime()
 
 
 def _row_to_job(row) -> TranslationJob:
@@ -49,9 +50,9 @@ def _row_to_job(row) -> TranslationJob:
         total_chunks=row["total_chunks"],
         completed_chunks=row["completed_chunks"],
         error=row["error"],
-        created_at=datetime.fromisoformat(row["created_at"]),
-        updated_at=datetime.fromisoformat(row["updated_at"]),
-        completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+        created_at=parse_database_datetime(row["created_at"]),
+        updated_at=parse_database_datetime(row["updated_at"]),
+        completed_at=parse_database_datetime(row["completed_at"]) if row["completed_at"] else None,
     )
 
 
@@ -70,22 +71,35 @@ def mark_interrupted_jobs() -> None:
 
 def get_translation_job(job_id: str) -> TranslationJob | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM translation_jobs WHERE id = %s", (job_id,)).fetchone()
+        row = conn.execute(
+            """
+            SELECT j.* FROM translation_jobs j
+            JOIN documents d ON d.id = j.document_id
+            WHERE j.id = %s AND d.user_id = %s
+            """,
+            (job_id, current_user_id()),
+        ).fetchone()
     return _row_to_job(row) if row else None
 
 
 def list_translation_jobs(document_id: str | None = None, active_only: bool = False) -> list[TranslationJob]:
-    clauses: list[str] = []
-    params: list[str] = []
+    clauses: list[str] = ["d.user_id = %s"]
+    params: list[str] = [current_user_id()]
     if document_id:
-        clauses.append("document_id = %s")
+        get_document(document_id)
+        clauses.append("j.document_id = %s")
         params.append(document_id)
     if active_only:
-        clauses.append("status IN ('queued', 'running')")
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        clauses.append("j.status IN ('queued', 'running')")
+    where = f"WHERE {' AND '.join(clauses)}"
     with connect() as conn:
         rows = conn.execute(
-            f"SELECT * FROM translation_jobs {where} ORDER BY created_at DESC",
+            f"""
+            SELECT j.* FROM translation_jobs j
+            JOIN documents d ON d.id = j.document_id
+            {where}
+            ORDER BY j.created_at DESC
+            """,
             params,
         ).fetchall()
     return [_row_to_job(row) for row in rows]

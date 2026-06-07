@@ -4,7 +4,7 @@ export type KnowledgeSaveSettings = {
   includeSourceTitle: boolean;
 };
 
-const STORAGE_KEY = "writerhub.knowledgeSaveSettings";
+const STORAGE_KEY = "knowledgeSaveSettings";
 
 export const DEFAULT_KNOWLEDGE_SAVE_SETTINGS: KnowledgeSaveSettings = {
   includeSearchResults: true,
@@ -13,7 +13,7 @@ export const DEFAULT_KNOWLEDGE_SAVE_SETTINGS: KnowledgeSaveSettings = {
 };
 
 export function loadKnowledgeSaveSettings(): KnowledgeSaveSettings {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const raw = userStorage.getItem(STORAGE_KEY);
   if (!raw) return DEFAULT_KNOWLEDGE_SAVE_SETTINGS;
   try {
     return { ...DEFAULT_KNOWLEDGE_SAVE_SETTINGS, ...JSON.parse(raw) } as KnowledgeSaveSettings;
@@ -23,5 +23,6 @@ export function loadKnowledgeSaveSettings(): KnowledgeSaveSettings {
 }
 
 export function saveKnowledgeSaveSettings(settings: KnowledgeSaveSettings) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  userStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
+import { userStorage } from "./userStorage";

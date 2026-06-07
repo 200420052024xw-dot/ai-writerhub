@@ -1,7 +1,7 @@
 import hashlib
 import json
-from datetime import UTC, datetime
 
+from app.core.database import mysql_datetime, parse_database_datetime
 from app.schemas.documents import DocumentDetail
 from app.schemas.translation import (
     TranslationChunk,
@@ -14,7 +14,7 @@ from app.services.document_service import connect, get_document
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return mysql_datetime()
 
 
 def source_hash_for_document(document: DocumentDetail) -> str:
@@ -64,7 +64,7 @@ def _version_from_row(row, current_hash: str) -> TranslationVersion:
         paragraph_pairs=_pairs(row["paragraph_pairs_json"]),
         sentence_pairs=_pairs(row["sentence_pairs_json"]),
         options=json.loads(row["options_json"] or "{}"),
-        updated_at=datetime.fromisoformat(row["updated_at"]),
+        updated_at=parse_database_datetime(row["updated_at"]),
     )
 
 

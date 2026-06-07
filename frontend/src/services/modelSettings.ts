@@ -84,7 +84,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
   },
 ];
 
-const STORAGE_KEY = "writerhub.modelSettings";
+const STORAGE_KEY = "modelSettings";
 
 export const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   providerId: "deepseek",
@@ -95,7 +95,7 @@ export const DEFAULT_MODEL_SETTINGS: ModelSettings = {
 };
 
 export function loadModelSettings(): ModelSettings {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const raw = userStorage.getItem(STORAGE_KEY);
   if (!raw) return DEFAULT_MODEL_SETTINGS;
 
   try {
@@ -106,6 +106,7 @@ export function loadModelSettings(): ModelSettings {
 }
 
 export function saveModelSettings(settings: ModelSettings) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
+  userStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   window.dispatchEvent(new Event("writerhub:model-settings-saved"));
 }
+import { userStorage } from "./userStorage";

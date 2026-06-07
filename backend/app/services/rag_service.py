@@ -12,7 +12,8 @@ from fastapi import HTTPException
 from app.core.config import get_settings
 from app.schemas.documents import DocumentDetail
 from app.schemas.rag import RagRuntimeConfig, RagSearchResult
-from app.services.document_service import connect
+from app.services.auth_service import current_user_id
+from app.services.document_service import connect, get_document
 from app.services.llm_client import RuntimeModelConfig, stream_chat_model
 
 
@@ -190,6 +191,7 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
     metadatas = [
         {
             "document_id": document.id,
+            "user_id": current_user_id(),
             "document_title": document.title,
             "paragraph_id": paragraph_id or "",
             "paragraph_index": paragraph_index if paragraph_index is not None else -1,
@@ -234,7 +236,12 @@ def normalize_scores(items: list[RagSearchResult]) -> list[RagSearchResult]:
 
 async def vector_search(question: str, document_ids: list[str], config: RagRuntimeConfig) -> list[RagSearchResult]:
     query_embedding = (await embed_texts([question], config))[0]
-    where = {"document_id": {"$in": document_ids}} if document_ids else None
+    where = {
+        "$and": [
+            {"user_id": current_user_id()},
+            {"document_id": {"$in": document_ids}},
+        ]
+    }
     result = chroma_collection().query(
         query_embeddings=[query_embedding],
         n_results=VECTOR_TOP_K,
@@ -270,25 +277,27 @@ def fts_query_text(question: str) -> str:
 def fts_search(question: str, document_ids: list[str]) -> list[RagSearchResult]:
     query_text = fts_query_text(question)
     doc_filter = ""
-    args: list[object] = [query_text, query_text]
+    args: list[object] = [query_text, query_text, current_user_id()]
     if document_ids:
         placeholders = ",".join("%s" for _ in document_ids)
-        doc_filter = f" AND document_id IN ({placeholders})"
+        doc_filter = f" AND r.document_id IN ({placeholders})"
         args.extend(document_ids)
     args.append(VECTOR_TOP_K)
     with connect() as conn:
         rows = conn.execute(
             f"""
             SELECT
-                chunk_id,
-                document_id,
-                document_title,
-                paragraph_id,
-                paragraph_index,
-                content,
-                MATCH(content, document_title) AGAINST(%s IN BOOLEAN MODE) AS rank
-            FROM rag_chunks
-            WHERE MATCH(content, document_title) AGAINST(%s IN BOOLEAN MODE){doc_filter}
+                r.chunk_id,
+                r.document_id,
+                r.document_title,
+                r.paragraph_id,
+                r.paragraph_index,
+                r.content,
+                MATCH(r.content, r.document_title) AGAINST(%s IN BOOLEAN MODE) AS rank
+            FROM rag_chunks r
+            JOIN documents d ON d.id = r.document_id
+            WHERE MATCH(r.content, r.document_title) AGAINST(%s IN BOOLEAN MODE)
+              AND d.user_id = %s{doc_filter}
             ORDER BY rank DESC
             LIMIT %s
             """,
@@ -342,6 +351,8 @@ async def retrieve(question: str, document_ids: list[str], config: RagRuntimeCon
     rag_config = runtime_rag_config(config)
     if not document_ids:
         return []
+    for document_id in set(document_ids):
+        get_document(document_id)
     vector_items = await vector_search(question, document_ids, rag_config)
     if rag_config.recall_strategy == "hybrid":
         items = merge_results(vector_items, fts_search(question, document_ids))

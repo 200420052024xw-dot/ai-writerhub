@@ -23,6 +23,7 @@ import {
   type TranslationVersion,
 } from "../services/api";
 import { loadModelSettings } from "../services/modelSettings";
+import { userStorage } from "../services/userStorage";
 
 const styleOptions: Array<[TranslationStyle, string]> = [
   ["default", "默认"],
@@ -43,8 +44,8 @@ const defaultOptions: TranslationOptions = {
   custom_requirements: "",
 };
 
-const GLOSSARY_KEY = "writerhub_glossary";
-const TRANSLATE_STATE_KEY = "writerhub.translatePageState";
+const GLOSSARY_KEY = "glossary";
+const TRANSLATE_STATE_KEY = "translatePageState";
 
 type TranslationSaveMode =
   | "target-only"
@@ -55,7 +56,7 @@ type TranslationSaveMode =
 
 function loadGlossary(): GlossaryEntry[] {
   try {
-    const raw = localStorage.getItem(GLOSSARY_KEY);
+    const raw = userStorage.getItem(GLOSSARY_KEY);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
@@ -63,7 +64,7 @@ function loadGlossary(): GlossaryEntry[] {
 }
 
 function saveGlossaryToStorage(glossary: GlossaryEntry[]) {
-  localStorage.setItem(GLOSSARY_KEY, JSON.stringify(glossary));
+  userStorage.setItem(GLOSSARY_KEY, JSON.stringify(glossary));
 }
 
 type TranslationResult = {
@@ -249,7 +250,7 @@ export function TranslatePage({
 }) {
   const cachedState = useMemo(() => {
     try {
-      return JSON.parse(localStorage.getItem(TRANSLATE_STATE_KEY) || "null") as TranslatePageState | null;
+      return JSON.parse(userStorage.getItem(TRANSLATE_STATE_KEY) || "null") as TranslatePageState | null;
     } catch {
       return null;
     }
@@ -413,7 +414,7 @@ export function TranslatePage({
   }, [sourceDocument?.id]);
 
   useEffect(() => {
-    localStorage.setItem(
+    userStorage.setItem(
       TRANSLATE_STATE_KEY,
       JSON.stringify({ sourceText, direction, displayMode, granularity, options, result, enableCustomRequirements, saveMode }),
     );

@@ -17,8 +17,9 @@ import {
 import { loadModelSettings } from "../services/modelSettings";
 import { loadRagSettings, toRagRuntimeConfig } from "../services/ragSettings";
 import { loadKnowledgeSaveSettings } from "../services/knowledgeSaveSettings";
+import { userStorage } from "../services/userStorage";
 
-const KNOWLEDGE_STATE_KEY = "writerhub.knowledgePageState";
+const KNOWLEDGE_STATE_KEY = "knowledgePageState";
 
 type KnowledgePageState = {
   selectedDocs: string[];
@@ -73,7 +74,7 @@ function conversationToTurns(conversation: KnowledgeConversation): ChatTurn[] {
 export function DocumentsPage() {
   const cachedState = (() => {
     try {
-      return JSON.parse(localStorage.getItem(KNOWLEDGE_STATE_KEY) || "null") as KnowledgePageState | null;
+      return JSON.parse(userStorage.getItem(KNOWLEDGE_STATE_KEY) || "null") as KnowledgePageState | null;
     } catch {
       return null;
     }
@@ -138,7 +139,7 @@ export function DocumentsPage() {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem(
+    userStorage.setItem(
       KNOWLEDGE_STATE_KEY,
       JSON.stringify({ selectedDocs: [...selectedDocs], question, answer: latestAnswer, chatTurns, searchResults, showDocLibrary, currentConversationId }),
     );

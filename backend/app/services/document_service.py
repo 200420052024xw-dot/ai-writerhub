@@ -15,7 +15,8 @@ import fitz
 from fastapi import HTTPException, UploadFile
 from PIL import Image, ImageDraw, ImageFont
 
-from app.core.database import _ConnectionCtx
+from app.core.database import _ConnectionCtx, mysql_datetime, parse_database_datetime
+from app.services.auth_service import current_user_id
 from app.prompts.documents import DOCUMENT_VISION_PROMPT
 from app.schemas.documents import (
     DocumentCreateRequest,
@@ -33,10 +34,6 @@ SUPPORTED_EXTENSIONS = {"txt", "md", "doc", "docx", "pdf", "ppt", "pptx"}
 STORAGE_ROOT = Path(__file__).resolve().parents[1] / "storage" / "documents"
 ORIGINAL_DIR = STORAGE_ROOT / "originals"
 WORK_DIR = STORAGE_ROOT / "work"
-
-
-def now_utc() -> datetime:
-    return datetime.now(UTC)
 
 
 def content_hash(content: str) -> str:
@@ -166,8 +163,8 @@ def fetch_paragraphs(conn, document_id: str) -> list[DocumentParagraph]:
             level=normalize_paragraph_level(row["level"], normalize_paragraph_type(row["type"])),
             content=row["content"],
             content_hash=row["content_hash"],
-            created_at=datetime.fromisoformat(row["created_at"]) if row["created_at"] else None,
-            updated_at=datetime.fromisoformat(row["updated_at"]) if row["updated_at"] else None,
+            created_at=parse_database_datetime(row["created_at"]) if row["created_at"] else None,
+            updated_at=parse_database_datetime(row["updated_at"]) if row["updated_at"] else None,
         )
         for row in rows
     ]
@@ -232,8 +229,8 @@ def replace_document_paragraphs(
                 level=level,
                 content=content,
                 content_hash=content_hash(content),
-                created_at=datetime.fromisoformat(created_at),
-                updated_at=datetime.fromisoformat(timestamp),
+                created_at=parse_database_datetime(created_at),
+                updated_at=parse_database_datetime(timestamp),
             )
         )
 
@@ -255,9 +252,9 @@ def row_to_summary(row) -> DocumentSummary:
         content_hash=row["content_hash"],
         rag_status=row["rag_status"],
         language=row["language"] if row["language"] in {"zh", "en"} else "zh",
-        last_saved_at=datetime.fromisoformat(row["last_saved_at"]),
-        last_indexed_at=datetime.fromisoformat(row["last_indexed_at"]) if row["last_indexed_at"] else None,
-        deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
+        last_saved_at=parse_database_datetime(row["last_saved_at"]),
+        last_indexed_at=parse_database_datetime(row["last_indexed_at"]) if row["last_indexed_at"] else None,
+        deleted_at=parse_database_datetime(row["deleted_at"]) if row["deleted_at"] else None,
     )
 
 
@@ -271,25 +268,36 @@ def row_to_detail(row, paragraphs: list[DocumentParagraph] | None = None) -> Doc
     return DocumentDetail(**row_to_summary(row).model_dump(), content=content, paragraphs=paragraph_list, glossary=glossary)
 
 
+_SUMMARY_COLUMNS = (
+    "id, title, content_hash, rag_status, language, last_saved_at, last_indexed_at, deleted_at"
+)
+
+
 def list_documents() -> list[DocumentSummary]:
     ensure_storage()
+    user_id = current_user_id()
     with connect() as conn:
-        # 清理卡在 recognizing 状态的文档（上次上传中断）
-        conn.execute(
-            "UPDATE documents SET rag_status = 'failed' WHERE rag_status = 'recognizing' AND deleted_at IS NULL"
-        )
-
-        rows = conn.execute("SELECT * FROM documents WHERE deleted_at IS NULL ORDER BY last_saved_at DESC").fetchall()
+        rows = conn.execute(
+            f"SELECT {_SUMMARY_COLUMNS} FROM documents WHERE user_id = %s AND deleted_at IS NULL ORDER BY last_saved_at DESC",
+            (user_id,),
+        ).fetchall()
     return [row_to_summary(row) for row in rows]
 
 
 def get_document(document_id: str, include_trashed: bool = False) -> DocumentDetail:
     ensure_storage()
+    user_id = current_user_id()
     with connect() as conn:
         if include_trashed:
-            row = conn.execute("SELECT * FROM documents WHERE id = %s", (document_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM documents WHERE id = %s AND user_id = %s",
+                (document_id, user_id),
+            ).fetchone()
         else:
-            row = conn.execute("SELECT * FROM documents WHERE id = %s AND deleted_at IS NULL", (document_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM documents WHERE id = %s AND user_id = %s AND deleted_at IS NULL",
+                (document_id, user_id),
+            ).fetchone()
         paragraphs = fetch_paragraphs(conn, document_id) if row else []
     if not row:
         raise HTTPException(status_code=404, detail="document not found")
@@ -325,7 +333,7 @@ def trash_document(document_id: str) -> None:
     from app.services.rag_service import delete_document_index
 
     delete_document_index(document_id)
-    timestamp = now_utc().isoformat()
+    timestamp = mysql_datetime()
     with connect() as conn:
         conn.execute("UPDATE documents SET deleted_at = %s, rag_status = 'not_indexed' WHERE id = %s", (timestamp, document_id))
 
@@ -356,7 +364,10 @@ def list_trashed_documents() -> list[DocumentSummary]:
     """List all documents in trash."""
     ensure_storage()
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM documents WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC").fetchall()
+        rows = conn.execute(
+            f"SELECT {_SUMMARY_COLUMNS} FROM documents WHERE user_id = %s AND deleted_at IS NOT NULL ORDER BY deleted_at DESC",
+            (current_user_id(),),
+        ).fetchall()
     return [row_to_summary(row) for row in rows]
 
 
@@ -367,11 +378,14 @@ def purge_expired_trash(max_age_days: int = 15) -> int:
 
     cutoff = datetime.now(UTC).timestamp() - max_age_days * 86400
     with connect() as conn:
-        rows = conn.execute("SELECT id, deleted_at FROM documents WHERE deleted_at IS NOT NULL").fetchall()
+        rows = conn.execute(
+            "SELECT id, deleted_at FROM documents WHERE user_id = %s AND deleted_at IS NOT NULL",
+            (current_user_id(),),
+        ).fetchall()
         expired_ids: list[str] = []
         for row in rows:
             try:
-                deleted_ts = datetime.fromisoformat(row["deleted_at"]).timestamp()
+                deleted_ts = parse_database_datetime(row["deleted_at"]).timestamp()
                 if deleted_ts < cutoff:
                     expired_ids.append(row["id"])
             except (ValueError, TypeError):
@@ -389,7 +403,7 @@ def purge_expired_trash(max_age_days: int = 15) -> int:
 def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
     ensure_storage()
     document_id = uuid.uuid4().hex
-    timestamp = now_utc().isoformat()
+    timestamp = mysql_datetime()
     paragraphs = markdown_to_paragraph_inputs(payload.content or "", payload.title)
     title = title_from_paragraphs(paragraphs, payload.title)
     content = paragraphs_to_markdown(paragraphs)
@@ -399,10 +413,21 @@ def create_document(payload: DocumentCreateRequest) -> DocumentDetail:
         conn.execute(
             """
             INSERT INTO documents
-            (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (id, user_id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (document_id, title, content, content_hash(content), "not_indexed", language, timestamp, None, glossary_json),
+            (
+                document_id,
+                current_user_id(),
+                title,
+                content,
+                content_hash(content),
+                "not_indexed",
+                language,
+                timestamp,
+                None,
+                glossary_json,
+            ),
         )
         replace_document_paragraphs(conn, document_id, paragraphs, timestamp)
 
@@ -431,7 +456,7 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
         elif current.rag_status in {"indexed", "outdated", "failed"}:
             next_status = "outdated"
 
-    timestamp = now_utc().isoformat()
+    timestamp = mysql_datetime()
     with connect() as conn:
         conn.execute(
             """
@@ -458,7 +483,7 @@ def update_document(document_id: str, payload: DocumentUpdateRequest) -> Documen
 
 def update_document_paragraphs(document_id: str, paragraphs: list[DocumentParagraphInput]) -> DocumentDetail:
     current = get_document(document_id)
-    timestamp = now_utc().isoformat()
+    timestamp = mysql_datetime()
     normalized = paragraphs or [DocumentParagraphInput(type="title", level=0, content=current.title), DocumentParagraphInput(type="paragraph", level=0, content="")]
     next_title = title_from_paragraphs(normalized, current.title)
     next_content = paragraphs_to_markdown(normalized)
@@ -503,7 +528,7 @@ def mark_document_index_failed(document_id: str) -> DocumentDetail:
 def complete_document_index(document_id: str, indexed_hash: str) -> DocumentDetail:
     current = get_document(document_id)
     status = "indexed" if indexed_hash == current.content_hash else "outdated"
-    indexed_at = now_utc().isoformat() if status == "indexed" else current.last_indexed_at.isoformat() if current.last_indexed_at else None
+    indexed_at = mysql_datetime() if status == "indexed" else mysql_datetime(current.last_indexed_at) if current.last_indexed_at else None
     with connect() as conn:
         conn.execute(
             "UPDATE documents SET rag_status = %s, last_indexed_at = %s WHERE id = %s",
@@ -677,15 +702,26 @@ async def quick_upload_document(file: UploadFile) -> DocumentDetail:
     filename = file.filename or file_path.name
     stem = Path(filename).stem or "无标题文档"
     title = stem
-    timestamp = now_utc().isoformat()
+    timestamp = mysql_datetime()
     with connect() as conn:
         conn.execute(
             """
             INSERT INTO documents
-            (id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (id, user_id, title, content, content_hash, rag_status, language, last_saved_at, last_indexed_at, glossary_json)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
-            (document_id, title, "", content_hash(""), "recognizing", "zh", timestamp, None, "[]"),
+            (
+                document_id,
+                current_user_id(),
+                title,
+                "",
+                content_hash(""),
+                "recognizing",
+                "zh",
+                timestamp,
+                None,
+                "[]",
+            ),
         )
 
     return get_document(document_id)
@@ -702,7 +738,7 @@ async def recognize_document(document_id: str, model_config: RuntimeModelConfig)
     title = title_from_paragraphs(paragraphs, title)
     content = paragraphs_to_markdown(paragraphs)
     language = detect_document_language(f"{title}\n{content}")
-    timestamp = now_utc().isoformat()
+    timestamp = mysql_datetime()
     with connect() as conn:
         conn.execute(
             "UPDATE documents SET title = %s, content = %s, content_hash = %s, rag_status = %s, language = %s, last_saved_at = %s WHERE id = %s",

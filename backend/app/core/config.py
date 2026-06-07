@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     db_user: str = Field(default="root", alias="DB_USER")
     db_password: str = Field(default="root", alias="DB_PASSWORD")
     db_name: str = Field(default="writerhub", alias="DB_NAME")
+    session_cookie_name: str = Field(default="writerhub_session", alias="SESSION_COOKIE_NAME")
+    session_secure_cookie: bool = Field(default=False, alias="SESSION_SECURE_COOKIE")
 
     model_config = SettingsConfigDict(
       env_file=".env",
