@@ -83,9 +83,6 @@ def create_app() -> FastAPI:
     if static_dir:
         static_path = Path(static_dir)
         if static_path.is_dir():
-            assets_path = static_path / "assets"
-            if assets_path.is_dir():
-                app.mount("/assets", StaticFiles(directory=str(assets_path)), name="static-assets")
 
             @app.get("/{full_path:path}")
             async def serve_spa(request: Request, full_path: str):
