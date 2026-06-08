@@ -138,11 +138,18 @@ export function DocumentsPage() {
     void refreshHistory();
   }, []);
 
+  const storageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    userStorage.setItem(
-      KNOWLEDGE_STATE_KEY,
-      JSON.stringify({ selectedDocs: [...selectedDocs], question, answer: latestAnswer, chatTurns, searchResults, showDocLibrary, currentConversationId }),
-    );
+    if (storageTimerRef.current) clearTimeout(storageTimerRef.current);
+    storageTimerRef.current = setTimeout(() => {
+      userStorage.setItem(
+        KNOWLEDGE_STATE_KEY,
+        JSON.stringify({ selectedDocs: [...selectedDocs], question, answer: latestAnswer, chatTurns, searchResults, showDocLibrary, currentConversationId }),
+      );
+    }, 500);
+    return () => {
+      if (storageTimerRef.current) clearTimeout(storageTimerRef.current);
+    };
   }, [selectedDocs, question, latestAnswer, chatTurns, searchResults, showDocLibrary, currentConversationId]);
 
   useEffect(() => {

@@ -4825,6 +4825,33 @@ button:disabled {
   background: #eef5ff;
 }
 
+.auth-checking-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 9999;
+  background: linear-gradient(90deg, transparent, #4a90d9 40%, #4a90d9 60%, transparent);
+  background-size: 200% 100%;
+  animation: auth-checking-slide 1.2s ease-in-out infinite;
+}
+
+.page-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 200px;
+  color: #8c9bb5;
+  font-size: 14px;
+}
+
+@keyframes auth-checking-slide {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 .auth-page {
   position: relative;
   display: grid;

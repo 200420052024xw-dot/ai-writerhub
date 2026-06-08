@@ -413,11 +413,18 @@ export function TranslatePage({
     };
   }, [sourceDocument?.id]);
 
+  const storageTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    userStorage.setItem(
-      TRANSLATE_STATE_KEY,
-      JSON.stringify({ sourceText, direction, displayMode, granularity, options, result, enableCustomRequirements, saveMode }),
-    );
+    if (storageTimerRef.current) clearTimeout(storageTimerRef.current);
+    storageTimerRef.current = setTimeout(() => {
+      userStorage.setItem(
+        TRANSLATE_STATE_KEY,
+        JSON.stringify({ sourceText, direction, displayMode, granularity, options, result, enableCustomRequirements, saveMode }),
+      );
+    }, 500);
+    return () => {
+      if (storageTimerRef.current) clearTimeout(storageTimerRef.current);
+    };
   }, [sourceText, direction, displayMode, granularity, options, result, enableCustomRequirements, saveMode]);
 
   useEffect(() => {

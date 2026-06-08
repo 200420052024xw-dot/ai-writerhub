@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Plus, Settings, X } from "lucide-react";
-import { EditorPage } from "../pages/EditorPage";
-import { TranslatePage } from "../pages/TranslatePage";
-import { FormatPage } from "../pages/FormatPage";
-import { DocumentsPage } from "../pages/DocumentsPage";
-import { HomePage } from "../pages/HomePage";
-import { SettingsPage } from "../pages/SettingsPage";
+
+const EditorPage = lazy(() => import("../pages/EditorPage").then((m) => ({ default: m.EditorPage })));
+const TranslatePage = lazy(() => import("../pages/TranslatePage").then((m) => ({ default: m.TranslatePage })));
+const FormatPage = lazy(() => import("../pages/FormatPage").then((m) => ({ default: m.FormatPage })));
+const DocumentsPage = lazy(() => import("../pages/DocumentsPage").then((m) => ({ default: m.DocumentsPage })));
+const HomePage = lazy(() => import("../pages/HomePage").then((m) => ({ default: m.HomePage })));
+const SettingsPage = lazy(() => import("../pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
 import { AccountMenu } from "../components/AccountMenu";
 import { loadModelSettings } from "../services/modelSettings";
 import { createStoredDocument, getActiveTranslationJobs, invalidateDocumentListCache, listStoredDocuments, getStoredDocument, type AuthUser, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
@@ -218,19 +219,33 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
 
   useEffect(() => {
     let cancelled = false;
-    const refreshJobs = async () => {
+    let timer: ReturnType<typeof setTimeout>;
+
+    const scheduleNext = (hasJobs: boolean) => {
+      if (cancelled) return;
+      timer = setTimeout(poll, hasJobs ? 1500 : 10000);
+    };
+
+    const poll = async () => {
+      if (cancelled) return;
       try {
         const jobs = await getActiveTranslationJobs();
-        if (!cancelled) setTranslationJobs(jobs);
+        if (!cancelled) {
+          setTranslationJobs(jobs);
+          scheduleNext(jobs.length > 0);
+        }
       } catch {
-        if (!cancelled) setTranslationJobs([]);
+        if (!cancelled) {
+          setTranslationJobs([]);
+          scheduleNext(false);
+        }
       }
     };
-    void refreshJobs();
-    const timer = window.setInterval(refreshJobs, 1500);
+
+    void poll();
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      clearTimeout(timer);
     };
   }, []);
 
@@ -387,15 +402,19 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
           </div>
 
           <div className="topbar-actions">
-            <div className={`health-pill ${modelStatusClass}`} title={healthState === "online" ? "后端在线" : "后端未连接"}>
-              <span className="health-dot" />
-              {modelStatusText}
-            </div>
+            {(healthState !== "online" || !modelConfigured) && (
+              <div className={`health-pill ${healthState !== "online" ? "offline" : modelStatusClass}`} title={healthState === "online" ? "后端在线" : "后端未连接"}>
+                <span className="health-dot" />
+                {healthState !== "online" ? "后端离线" : modelStatusText}
+              </div>
+            )}
             <AccountMenu onLogout={onLogout} onUserChange={onUserChange} user={user} />
           </div>
         </header>
 
-        {pageContent}
+        <Suspense fallback={<div className="page-loading">加载中...</div>}>
+          {pageContent}
+        </Suspense>
 
         {activePage === "editor" && (
           <footer className="statusbar">

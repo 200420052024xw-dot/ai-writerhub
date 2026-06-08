@@ -37,7 +37,7 @@ export function App() {
     return () => window.removeEventListener("writerhub:unauthorized", handleUnauthorized);
   }, []);
 
-  if (authState === "checking") return <div className="auth-loading">正在检查登录状态...</div>;
+  if (authState === "checking") return <div className="auth-checking-bar" />;
   if (!user || authState === "anonymous") {
     return <AuthPage onAuthenticated={(nextUser) => {
       setActiveStorageUser(nextUser.id);

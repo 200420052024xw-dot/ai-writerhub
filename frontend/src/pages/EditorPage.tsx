@@ -1015,7 +1015,8 @@ export function EditorPage({
   const [documentTitle, setDocumentTitle] = useState("");
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const [bodyEmpty, setBodyEmpty] = useState(true);
-  const [contentVersion, setContentVersion] = useState(0);
+  const contentVersionRef = useRef(0);
+  const [saveToggle, setSaveToggle] = useState(false);
   const [, setSelectionVersion] = useState(0);
   const [pendingMarkdown, setPendingMarkdown] = useState<{ content: string; features: string[] } | null>(null);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
@@ -1067,7 +1068,8 @@ export function EditorPage({
     onUpdate: ({ editor }) => {
       setBodyEmpty(isEditorBodyEmpty(editor));
       if (!loadingDocumentRef.current) {
-        setContentVersion((version) => version + 1);
+        contentVersionRef.current += 1;
+        setSaveToggle((v) => !v);
       }
       if (onStatsChange) {
         const text = editor.state.doc.textContent;
@@ -1208,7 +1210,7 @@ export function EditorPage({
     }, 900);
 
     return () => window.clearTimeout(timer);
-  }, [documentId, documentTitle, editor, contentVersion, onDocumentSaved, onSaveStateChange]);
+  }, [documentId, documentTitle, editor, saveToggle, onDocumentSaved, onSaveStateChange]);
 
   const writeToClipboard = async (type: "markdown" | "plain") => {
     if (!editor) return;

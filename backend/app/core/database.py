@@ -2,11 +2,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pymysql
+from dbutils.pooled_db import PooledDB
 from pymysql.cursors import DictCursor
 
 from app.core.config import get_settings
 
 _SCHEMA_SQL = Path(__file__).resolve().parent / "schema.sql"
+
+_pool: PooledDB | None = None
 
 
 def mysql_datetime(value: datetime | None = None) -> str:
@@ -37,8 +40,22 @@ def _connection_params(database: str | None = None) -> dict:
     )
 
 
+def _get_pool() -> PooledDB:
+    global _pool
+    if _pool is None:
+        _pool = PooledDB(
+            creator=pymysql,
+            maxconnections=20,
+            mincached=2,
+            maxcached=10,
+            blocking=True,
+            **_connection_params(),
+        )
+    return _pool
+
+
 def ensure_database() -> None:
-    """确保数据库存在"""
+    """确保数据库存在（仅启动时调用）"""
     s = get_settings()
     params = _connection_params(database=None)
     params.pop("database")
@@ -53,16 +70,15 @@ def ensure_database() -> None:
         conn.close()
 
 
-def get_connection() -> pymysql.Connection:
-    """获取数据库连接（DictCursor，autocommit）"""
-    ensure_database()
-    return pymysql.connect(**_connection_params())
+def get_connection():
+    """从连接池获取数据库连接"""
+    return _get_pool().connection()
 
 
 class _CursorWrapper:
     """包装 pymysql Cursor，使 conn.execute/fetchall/fetchone 等 sqlite3 风格调用可用"""
 
-    def __init__(self, conn: pymysql.Connection):
+    def __init__(self, conn):
         self._conn = conn
         self._cur = conn.cursor()
 
@@ -84,7 +100,7 @@ class _CursorWrapper:
             self._cur.close()
         except Exception:
             pass
-        self._conn.close()
+        self._conn.close()  # 连接池的 close 是归还，不是真正关闭
 
 
 class _ConnectionCtx:
@@ -97,7 +113,7 @@ class _ConnectionCtx:
         return _CursorWrapper(self._conn)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._conn.close()
+        self._conn.close()  # 归还到连接池
         return False
 
 
@@ -106,7 +122,8 @@ def ensure_tables() -> None:
     sql = _SCHEMA_SQL.read_text(encoding="utf-8")
     sql = "\n".join(line for line in sql.splitlines() if not line.lstrip().startswith("--"))
     statements = [s.strip() for s in sql.split(";") if s.strip()]
-    conn = get_connection()
+    params = _connection_params()
+    conn = pymysql.connect(**params)
     try:
         with conn.cursor() as cur:
             for stmt in statements:
@@ -142,7 +159,8 @@ def _index_exists(cur, table: str, index: str) -> bool:
 def run_user_isolation_migration() -> bool:
     """Clear legacy business data and add ownership columns exactly once."""
     migration_key = "2026_06_07_user_isolation_v1"
-    conn = get_connection()
+    params = _connection_params()
+    conn = pymysql.connect(**params)
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM schema_migrations WHERE migration_key = %s", (migration_key,))
@@ -184,7 +202,8 @@ def run_user_isolation_migration() -> bool:
 def run_add_email_migration() -> bool:
     """Add email column to users table."""
     migration_key = "2026_06_07_add_email_v1"
-    conn = get_connection()
+    params = _connection_params()
+    conn = pymysql.connect(**params)
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM schema_migrations WHERE migration_key = %s", (migration_key,))

@@ -1,6 +1,7 @@
 import hashlib
 import re
 import secrets
+import time
 import uuid
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
@@ -15,10 +16,14 @@ from app.schemas.auth import UserResponse
 
 
 SESSION_TTL = timedelta(days=7)
+SESSION_CACHE_TTL = 30  # seconds
 USERNAME_PATTERN = re.compile(r"^[\u3400-\u9fffA-Za-z0-9_]{3,24}$")
 _password_hasher = PasswordHasher()
 _current_user_id: ContextVar[str | None] = ContextVar("current_user_id", default=None)
 _current_session_hash: ContextVar[str | None] = ContextVar("current_session_hash", default=None)
+
+# token_hash -> (timestamp, UserResponse)
+_session_cache: dict[str, tuple[float, UserResponse]] = {}
 
 
 def connect():
@@ -115,10 +120,28 @@ def create_session(user_id: str) -> tuple[str, datetime]:
     return token, expires_at
 
 
+def _invalidate_session_cache(token_hash: str | None = None, user_id: str | None = None) -> None:
+    """清除会话缓存。指定 token_hash 清单条，指定 user_id 清该用户所有会话。"""
+    if token_hash:
+        _session_cache.pop(token_hash, None)
+    elif user_id:
+        to_remove = [k for k, (_, u) in _session_cache.items() if u.id == user_id]
+        for k in to_remove:
+            _session_cache.pop(k, None)
+    else:
+        _session_cache.clear()
+
+
 def resolve_session(token: str | None) -> tuple[UserResponse, str] | None:
     if not token:
         return None
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    # 检查缓存
+    cached = _session_cache.get(token_hash)
+    if cached and (time.monotonic() - cached[0]) < SESSION_CACHE_TTL:
+        return cached[1], token_hash
+
     with connect() as conn:
         row = conn.execute(
             """
@@ -134,7 +157,9 @@ def resolve_session(token: str | None) -> tuple[UserResponse, str] | None:
         if parse_database_datetime(row["expires_at"]) <= datetime.now(UTC):
             conn.execute("DELETE FROM user_sessions WHERE token_hash = %s", (token_hash,))
             return None
-    return user_from_row(row), token_hash
+    user = user_from_row(row)
+    _session_cache[token_hash] = (time.monotonic(), user)
+    return user, token_hash
 
 
 def set_request_auth(user_id: str, session_hash: str):
@@ -175,6 +200,7 @@ def get_current_user() -> UserResponse:
 def delete_session(session_hash: str) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM user_sessions WHERE token_hash = %s", (session_hash,))
+    _invalidate_session_cache(token_hash=session_hash)
 
 
 def update_nickname(nickname: str) -> UserResponse:
@@ -205,6 +231,7 @@ def update_password(old_password: str, new_password: str) -> None:
             "DELETE FROM user_sessions WHERE user_id = %s AND token_hash <> %s",
             (user_id, current_session_hash()),
         )
+        _invalidate_session_cache(user_id=user_id)
 
 
 def reset_password_by_email(username: str, email: str, new_password: str) -> None:
@@ -222,6 +249,7 @@ def reset_password_by_email(username: str, email: str, new_password: str) -> Non
             (_password_hasher.hash(new_password), mysql_datetime(), user_id),
         )
         conn.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+        _invalidate_session_cache(user_id=user_id)
 
 
 def cookie_options(expires_at: datetime) -> dict:

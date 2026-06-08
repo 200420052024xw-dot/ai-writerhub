@@ -3,6 +3,7 @@ from io import BytesIO
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 from fastapi import HTTPException
 
@@ -139,6 +140,27 @@ async def parse_format_config(prompt: str, current_config: FormatConfig, model_c
     return FormatConfig(**current)
 
 
+def normalize_east_asia_font(value: str) -> str:
+    """Normalize frontend font name to standard Chinese font name for OOXML w:eastAsia."""
+    if not value:
+        return "宋体"
+
+    value = value.strip()
+
+    if "宋体" in value or "SimSun" in value or "simsun" in value:
+        return "宋体"
+    if "微软雅黑" in value or "雅黑" in value:
+        return "微软雅黑"
+    if "黑体" in value:
+        return "黑体"
+    if "仿宋" in value:
+        return "仿宋"
+    if "楷体" in value:
+        return "楷体"
+
+    return "宋体"
+
+
 def parse_font_size(value: str) -> float:
     for label, size in FONT_SIZE_PT.items():
         if label in value:
@@ -198,37 +220,86 @@ def configure_section(document: Document, config: FormatConfig) -> None:
         section.footer.paragraphs[0].text = config.footer.strip()
 
 
-def apply_run_style(run, config: FormatConfig, bold: bool = False) -> None:
-    run.font.name = config.font or "宋体"
-    run.font.size = Pt(parse_font_size(config.fontSize))
+def apply_run_font(run, east_asia_font: str, ascii_font: str, size_pt: float, bold: bool = False) -> None:
+    """Set run font with full OOXML control for both Chinese and Western characters."""
+    run.font.name = ascii_font
+    run.font.size = Pt(size_pt)
     run.bold = bold
+
+    r_pr = run._element.get_or_add_rPr()
+    r_fonts = r_pr.rFonts
+    if r_fonts is None:
+        r_fonts = r_pr.get_or_add_rFonts()
+
+    r_fonts.set(qn("w:eastAsia"), east_asia_font)
+    r_fonts.set(qn("w:ascii"), ascii_font)
+    r_fonts.set(qn("w:hAnsi"), ascii_font)
+    r_fonts.set(qn("w:cs"), ascii_font)
 
 
 def apply_paragraph_style(paragraph, config: FormatConfig) -> None:
     paragraph.alignment = paragraph_alignment(config.align)
     paragraph.paragraph_format.line_spacing = parse_line_spacing(config.lineHeight)
-    if "首行" in config.indent:
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+
+    indent = config.indent or ""
+    if "首行" in indent:
         paragraph.paragraph_format.first_line_indent = Cm(0.74)
+    elif "左缩进" in indent:
+        paragraph.paragraph_format.left_indent = Cm(0.74)
+    elif "悬挂" in indent:
+        paragraph.paragraph_format.first_line_indent = Cm(-0.74)
+        paragraph.paragraph_format.left_indent = Cm(0.74)
+
+
+def add_heading_paragraph(document: Document, block: FormatDocumentParagraph) -> None:
+    """Add a heading paragraph with manual formatting (no built-in heading style)."""
+    paragraph = document.add_paragraph()
+    run = paragraph.add_run(block.content or "")
+
+    level = max(1, min(4, block.level or 1))
+
+    if level == 1:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        size_pt = 16
+    elif level == 2:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        size_pt = 14
+    else:
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        size_pt = 12
+
+    paragraph.paragraph_format.space_before = Pt(12)
+    paragraph.paragraph_format.space_after = Pt(6)
+
+    apply_run_font(run, east_asia_font="黑体", ascii_font="Times New Roman", size_pt=size_pt, bold=True)
 
 
 def add_paragraph(document: Document, block: FormatDocumentParagraph, config: FormatConfig) -> None:
     if block.type == "title":
         return
-    if block.type == "heading":
-        paragraph = document.add_heading(block.content, level=max(1, min(4, block.level)))
-        bold = True
-    elif block.type == "list":
-        paragraph = document.add_paragraph(style="List Bullet")
-        paragraph.add_run(block.content)
-        bold = False
-    else:
-        paragraph = document.add_paragraph()
-        paragraph.add_run(block.content)
-        bold = False
 
+    if block.type == "heading":
+        add_heading_paragraph(document, block)
+        return
+
+    if block.type == "list":
+        paragraph = document.add_paragraph(style="List Bullet")
+        run = paragraph.add_run(block.content or "")
+        apply_paragraph_style(paragraph, config)
+        east_asia_font = normalize_east_asia_font(config.font)
+        size_pt = parse_font_size(config.fontSize)
+        apply_run_font(run, east_asia_font, "Times New Roman", size_pt, bold=False)
+        return
+
+    # paragraph / table / default
+    paragraph = document.add_paragraph()
+    run = paragraph.add_run(block.content or "")
     apply_paragraph_style(paragraph, config)
-    for run in paragraph.runs:
-        apply_run_style(run, config, bold=bold)
+    east_asia_font = normalize_east_asia_font(config.font)
+    size_pt = parse_font_size(config.fontSize)
+    apply_run_font(run, east_asia_font, "Times New Roman", size_pt, bold=False)
 
 
 async def organize_document(
@@ -275,10 +346,13 @@ def build_docx(payload: FormatExportDocxRequest) -> BytesIO:
     document = Document()
     configure_section(document, payload.config)
 
-    title = document.add_heading(payload.title, level=1)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    for run in title.runs:
-        apply_run_style(run, payload.config, bold=True)
+    # Document title: centered, bold, 黑体, Times New Roman, 16pt
+    title_para = document.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_para.paragraph_format.space_before = Pt(12)
+    title_para.paragraph_format.space_after = Pt(6)
+    title_run = title_para.add_run(payload.title)
+    apply_run_font(title_run, east_asia_font="黑体", ascii_font="Times New Roman", size_pt=16, bold=True)
 
     for paragraph in payload.paragraphs:
         add_paragraph(document, paragraph, payload.config)
