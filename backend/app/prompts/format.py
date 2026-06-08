@@ -1,37 +1,62 @@
 import json
 
 
-FORMAT_CONFIG_FIELDS = [
-    "font",
-    "fontSize",
-    "lineHeight",
-    "indent",
-    "align",
-    "paperSize",
-    "headingStyle",
-    "margin",
-    "header",
-    "footer",
-    "extraRequirements",
+FONT_OPTIONS = ["宋体（SimSun）", "微软雅黑", "黑体", "仿宋", "楷体"]
+FONT_SIZE_OPTIONS = [
+    "初号（42pt）", "小初（36pt）", "一号（26pt）", "小一（24pt）",
+    "二号（22pt）", "小二（18pt）", "三号（16pt）", "小三（15pt）",
+    "四号（14pt）", "小四（12pt）", "五号（10.5pt）", "小五（9pt）",
+    "六号（7.5pt）", "小六（6.5pt）", "七号（5.5pt）", "八号（5pt）",
 ]
+
+# String fields that can be parsed from natural language
+FORMAT_STRING_FIELDS = [
+    "bodyFont", "bodyFontSize",
+    "titleFont", "titleFontSize",
+    "h1Font", "h1FontSize",
+    "h2Font", "h2FontSize",
+    "h3Font", "h3FontSize",
+    "lineHeight", "indent", "align",
+    "paperSize", "orientation", "margin",
+    "header", "footer", "extraRequirements",
+]
+
+# Boolean fields for bold toggles
+FORMAT_BOOL_FIELDS = ["bodyBold", "titleBold", "h1Bold", "h2Bold", "h3Bold"]
 
 
 def build_format_parse_prompts(prompt: str, current_config: dict) -> tuple[str, str]:
     valid_options = {
-        "font": ["宋体（SimSun）", "微软雅黑", "黑体", "仿宋", "楷体"],
-        "fontSize": ["五号（10.5pt）", "小四（12pt）", "六号（7.5pt）", "小六（6.5pt）", "七号（5.5pt）", "八号（5pt）"],
+        "font": FONT_OPTIONS,
+        "fontSize": FONT_SIZE_OPTIONS,
         "lineHeight": ["单倍行距", "1.25 倍行距", "1.5 倍行距", "2 倍行距"],
         "indent": ["无缩进", "首行缩进 2 字符", "左缩进 2 字符", "悬挂缩进 2 字符"],
         "align": ["左对齐", "居中对齐", "右对齐", "两端对齐"],
         "paperSize": ["A4（21 × 29.7cm）", "A5（14.8 × 21cm）", "B5（17.6 × 25cm）", "Letter（21.6 × 27.9cm）"],
+        "orientation": ["纵向", "横向"],
         "margin": ["普通：上/下 2.54cm，左/右 3.18cm", "窄边距：上/下/左/右 1.27cm"],
     }
     system_prompt = (
-        "You parse natural-language document formatting requirements. Return JSON only, without Markdown or explanation. "
-        f"The JSON may only contain these fields: {', '.join(FORMAT_CONFIG_FIELDS)}. "
-        "Only populate fields explicitly requested by the user; return an empty string for unspecified fields. "
-        "For fields with predefined options, choose the closest exact option. "
-        "headingStyle, header, footer, and extraRequirements are free text."
+        "You parse natural-language document formatting requirements into a structured config. "
+        "Return JSON only, no Markdown.\n\n"
+        "The config has these groups:\n"
+        "- body: bodyFont (font name), bodyFontSize (size label), bodyBold (boolean)\n"
+        "- title: titleFont, titleFontSize, titleBold (boolean) - for the document main title\n"
+        "- h1: h1Font, h1FontSize, h1Bold (boolean) - for level-1 headings\n"
+        "- h2: h2Font, h2FontSize, h2Bold (boolean) - for level-2 headings\n"
+        "- h3: h3Font, h3FontSize, h3Bold (boolean) - for level-3 headings\n"
+        "- page: lineHeight, indent, align, paperSize, margin, header, footer, extraRequirements\n\n"
+        "Font options: 宋体（SimSun）, 微软雅黑, 黑体, 仿宋, 楷体\n"
+        "Font size options: 初号（42pt）, 小初（36pt）, 一号（26pt）, 小一（24pt）, 二号（22pt）, 小二（18pt）, 三号（16pt）, 小三（15pt）, 四号（14pt）, 小四（12pt）, 五号（10.5pt）, 小五（9pt）, 六号（7.5pt）, 小六（6.5pt）, 七号（5.5pt）, 八号（5pt）\n"
+        "LineHeight options: 单倍行距, 1.25 倍行距, 1.5 倍行距, 2 倍行距\n"
+        "Indent options: 无缩进, 首行缩进 2 字符, 左缩进 2 字符, 悬挂缩进 2 字符\n"
+        "Align options: 左对齐, 居中对齐, 右对齐, 两端对齐\n"
+        "PaperSize options: A4（21 × 29.7cm）, A5（14.8 × 21cm）, B5（17.6 × 25cm）, Letter（21.6 × 27.9cm）\n"
+        "Margin options: 普通：上/下 2.54cm，左/右 3.18cm, 窄边距：上/下/左/右 1.27cm\n\n"
+        "Only populate fields the user explicitly mentioned. "
+        "For font/size fields, return empty string if not mentioned. "
+        "For bold fields, return true/false only if the user mentioned bold/加粗 for that level. "
+        "For header/footer/extraRequirements, they are free text."
     )
     user_prompt = json.dumps(
         {

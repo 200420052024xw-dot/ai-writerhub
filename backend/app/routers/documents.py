@@ -1,4 +1,7 @@
+import re
+
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 
 from app.schemas.documents import (
     DocumentCreateRequest,
@@ -30,8 +33,10 @@ from app.services.document_service import (
     update_document_paragraphs,
     upload_and_parse_document,
 )
+from app.services.format_service import build_docx, build_pdf
 from app.services.llm_client import RuntimeModelConfig
 from app.services.rag_service import index_document_chunks
+from app.schemas.format import FormatConfig, FormatDocumentParagraph, FormatExportDocxRequest
 
 
 router = APIRouter()
@@ -137,4 +142,74 @@ async def recognize(
     return await recognize_document(
         document_id,
         RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model),
+    )
+
+
+# --------------- Document export ---------------
+
+_DEFAULT_EXPORT_CONFIG = FormatConfig(
+    bodyFont="宋体（SimSun）",
+    bodyFontSize="小四（12pt）",
+    bodyBold=False,
+    lineHeight="1.5 倍行距",
+    indent="首行缩进 2 字符",
+    align="两端对齐",
+    titleFont="黑体",
+    titleFontSize="三号（16pt）",
+    titleBold=True,
+    h1Font="黑体",
+    h1FontSize="三号（16pt）",
+    h1Bold=True,
+    h2Font="黑体",
+    h2FontSize="四号（14pt）",
+    h2Bold=True,
+    h3Font="黑体",
+    h3FontSize="小四（12pt）",
+    h3Bold=True,
+    paperSize="A4（21 × 29.7cm）",
+    orientation="纵向",
+    margin="普通：上/下 2.54cm，左/右 3.18cm",
+)
+
+
+def _paragraphs_to_format(doc_paragraphs) -> list[FormatDocumentParagraph]:
+    return [
+        FormatDocumentParagraph(
+            paragraph_id=p.id,
+            type=p.type,
+            level=p.level,
+            content=p.content,
+        )
+        for p in doc_paragraphs
+    ]
+
+
+@router.get("/documents/{document_id}/export/docx")
+async def export_docx(document_id: str) -> StreamingResponse:
+    doc = get_document(document_id)
+    paragraphs = _paragraphs_to_format(doc.paragraphs)
+    title = doc.title.strip() or "无标题文档"
+    payload = FormatExportDocxRequest(title=title, paragraphs=paragraphs, config=_DEFAULT_EXPORT_CONFIG)
+    buffer = build_docx(payload)
+    safe_title = re.sub(r'[\\/:*?"<>|]', '', title)[:50] or "文档"
+    filename = f"{safe_title}.docx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/documents/{document_id}/export/pdf")
+async def export_pdf(document_id: str) -> StreamingResponse:
+    doc = get_document(document_id)
+    paragraphs = _paragraphs_to_format(doc.paragraphs)
+    title = doc.title.strip() or "无标题文档"
+    buffer = build_pdf(title, paragraphs, _DEFAULT_EXPORT_CONFIG)
+    safe_title = re.sub(r'[\\/:*?"<>|]', '', title)[:50] or "文档"
+    filename = f"{safe_title}.pdf"
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

@@ -20,6 +20,8 @@ import {
 import {
   createStoredDocument,
   deleteStoredDocument,
+  exportDocumentDocx,
+  exportDocumentPdf,
   getStoredDocument,
   indexStoredDocument,
   invalidateDocumentListCache,
@@ -39,10 +41,17 @@ type HomePageProps = {
   onTranslateDocument: (document: StoredDocumentDetail) => void;
 };
 
-type ParsedStatus = "parsed" | "pending" | "updated" | "indexing" | "recognizing" | "failed";
+type RecognizeInfo = { fileName: string; startTime: number };
+type ParsedStatus = "parsed" | "pending" | "updated" | "indexing" | "recognizing" | "recognize-timeout" | "failed";
 
-function parseStatus(document: StoredDocumentSummary, recognizingDocs?: Map<string, string>): ParsedStatus {
-  if (recognizingDocs?.has(document.id)) return "recognizing";
+const RECOGNIZE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+function parseStatus(document: StoredDocumentSummary, recognizingDocs?: Map<string, RecognizeInfo>): ParsedStatus {
+  const info = recognizingDocs?.get(document.id);
+  if (info) {
+    if (Date.now() - info.startTime > RECOGNIZE_TIMEOUT_MS) return "recognize-timeout";
+    return "recognizing";
+  }
   if (document.rag_status === "indexed") return "parsed";
   if (document.rag_status === "indexing") return "indexing";
   if (document.rag_status === "recognizing") return "recognizing";
@@ -56,6 +65,7 @@ function statusLabel(status: ParsedStatus) {
   if (status === "updated") return "待更新";
   if (status === "indexing") return "解析中";
   if (status === "recognizing") return "识别中";
+  if (status === "recognize-timeout") return "识别超时";
   if (status === "failed") return "解析失败";
   return "待解析";
 }
@@ -111,7 +121,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [showTrashConfirmId, setShowTrashConfirmId] = useState<string | null>(null);
-  const [recognizingDocs, setRecognizingDocs] = useState<Map<string, string>>(new Map());
+  const [recognizingDocs, setRecognizingDocs] = useState<Map<string, RecognizeInfo>>(new Map());
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [completeMessage, setCompleteMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -144,13 +154,68 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     void refresh();
   }, []);
 
+  // Periodically check for timed-out recognizing docs
+  useEffect(() => {
+    if (recognizingDocs.size === 0) return;
+    const timer = setInterval(() => {
+      const now = Date.now();
+      for (const [, info] of recognizingDocs) {
+        if (now - info.startTime > RECOGNIZE_TIMEOUT_MS) {
+          // Force re-render to update status display
+          setRecognizingDocs((prev) => new Map(prev));
+          break;
+        }
+      }
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [recognizingDocs]);
+
   const createDocument = async () => {
     try {
       const document = await createStoredDocument({ title: "", content: "" });
-      await refresh();
+      invalidateDocumentListCache();
+      await refresh(true);
       onOpenDocument({ ...document, title: "" });
     } catch {
       showMessage("新建文档失败");
+    }
+  };
+
+  const retryRecognize = async (documentId: string) => {
+    const settings = loadModelSettings();
+    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+      showMessage("请先在设置页配置支持图片输入的模型");
+      return;
+    }
+    setRecognizingDocs((prev) => {
+      const next = new Map(prev);
+      next.delete(documentId);
+      return new Map(next).set(documentId, { fileName: "", startTime: Date.now() });
+    });
+    try {
+      await Promise.race([
+        recognizeDocument({
+          documentId,
+          api_key: settings.apiKey,
+          base_url: settings.baseUrl,
+          model: settings.defaultModel,
+          vision_model: settings.visionModel || undefined,
+        }),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("识别超时")), RECOGNIZE_TIMEOUT_MS),
+        ),
+      ]);
+      showMessage("识别完成");
+    } catch {
+      showMessage("识别失败");
+    } finally {
+      setRecognizingDocs((prev) => {
+        const next = new Map(prev);
+        next.delete(documentId);
+        return next;
+      });
+      invalidateDocumentListCache();
+      await refresh(true);
     }
   };
 
@@ -200,7 +265,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     for (const file of filesToUpload) {
       try {
         const doc = await quickUploadDocument(file);
-        setRecognizingDocs((prev) => new Map(prev).set(doc.id, file.name));
+        setRecognizingDocs((prev) => new Map(prev).set(doc.id, { fileName: file.name, startTime: Date.now() }));
         uploaded.push({ docId: doc.id, file });
       } catch {
         showMessage(`${file.name} 上传失败`);
@@ -213,7 +278,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     }
 
     // 刷新列表，让新文档立即显示（状态为"识别中"）
-    await refresh();
+    invalidateDocumentListCache();
+    await refresh(true);
 
     // 关闭弹窗
     setSelectedFiles([]);
@@ -221,16 +287,21 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     setLoading(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
 
-    // 阶段2：后台并行视觉识别（不阻塞 UI）
+    // 阶段2：后台并行视觉识别（不阻塞 UI，5 分钟超时）
     const results = await Promise.allSettled(
       uploaded.map(({ docId }) =>
-        recognizeDocument({
-          documentId: docId,
-          api_key: settings.apiKey,
-          base_url: settings.baseUrl,
-          model: settings.defaultModel,
-          vision_model: settings.visionModel || undefined,
-        }),
+        Promise.race([
+          recognizeDocument({
+            documentId: docId,
+            api_key: settings.apiKey,
+            base_url: settings.baseUrl,
+            model: settings.defaultModel,
+            vision_model: settings.visionModel || undefined,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("识别超时")), RECOGNIZE_TIMEOUT_MS),
+          ),
+        ]),
       ),
     );
 
@@ -250,7 +321,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
       });
     });
 
-    await refresh();
+    invalidateDocumentListCache();
+    await refresh(true);
 
     if (failCount === 0) {
       setCompleteMessage(`全部 ${successCount} 个文档解析完成`);
@@ -275,7 +347,14 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
       });
       window.dispatchEvent(new CustomEvent("writerhub:document-deleted", { detail: { documentId } }));
       setMenuDocumentId(null);
-      await refresh();
+      setRecognizingDocs((prev) => {
+        if (!prev.has(documentId)) return prev;
+        const next = new Map(prev);
+        next.delete(documentId);
+        return next;
+      });
+      invalidateDocumentListCache();
+      await refresh(true);
       showMessage("已移至回收站");
     } catch {
       showMessage("删除文档失败");
@@ -305,30 +384,30 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
   const exportDocument = async (documentId: string, type: "md" | "word" | "pdf") => {
     setExportDocumentId(null);
     try {
-      const document = await getStoredDocument(documentId);
-      const title = document.title.trim() || "无标题文档";
-      const filename = safeFileName(title);
-      const markdown = `# ${title}\n\n${document.content || ""}`;
       if (type === "md") {
+        const document = await getStoredDocument(documentId);
+        const title = document.title.trim() || "无标题文档";
+        const filename = safeFileName(title);
+        const markdown = `# ${title}\n\n${document.content || ""}`;
         downloadBlob(markdown, `${filename}.md`, "text/markdown;charset=utf-8");
         return;
       }
 
-      const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>body{font-family:Arial,'Microsoft YaHei',sans-serif;line-height:1.8;padding:40px;color:#17233c;}h1{font-size:28px;}pre{white-space:pre-wrap;font-family:inherit;}</style></head><body><h1>${escapeHtml(title)}</h1><pre>${escapeHtml(document.content || "")}</pre></body></html>`;
+      const document = await getStoredDocument(documentId);
+      const title = document.title.trim() || "无标题文档";
+      const filename = safeFileName(title);
+
       if (type === "word") {
-        downloadBlob(html, `${filename}.doc`, "application/msword;charset=utf-8");
+        const blob = await exportDocumentDocx(documentId);
+        downloadBlob(blob, `${filename}.docx`, blob.type);
         return;
       }
 
-      const printWindow = window.open("", "_blank");
-      if (!printWindow) {
-        showMessage("浏览器阻止了 PDF 打印窗口");
+      if (type === "pdf") {
+        const blob = await exportDocumentPdf(documentId);
+        downloadBlob(blob, `${filename}.pdf`, blob.type);
         return;
       }
-      printWindow.document.write(html);
-      printWindow.document.close();
-      printWindow.focus();
-      printWindow.print();
     } catch {
       showMessage("导出失败，请稍后重试");
     }
@@ -526,22 +605,35 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
             documents.map((document) => {
               const status = parseStatus(document, recognizingDocs);
               const isRecognizing = status === "recognizing";
+              const isTimeout = status === "recognize-timeout";
+              const isBlocked = isRecognizing || isTimeout;
               return (
               <div
-                className={`home-doc-row${isRecognizing ? " recognizing" : ""}`}
+                className={`home-doc-row${isRecognizing ? " recognizing" : ""}${isTimeout ? " timeout" : ""}`}
                 key={document.id}
-                onClick={isRecognizing ? undefined : () => void onOpenDocumentClick(document.id, onOpenDocument)}
+                onClick={isBlocked ? undefined : () => void onOpenDocumentClick(document.id, onOpenDocument)}
               >
-                <button className="home-doc-title" onClick={isRecognizing ? undefined : (event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onOpenDocument); }} type="button" disabled={isRecognizing}>
+                <button className="home-doc-title" onClick={isBlocked ? undefined : (event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onOpenDocument); }} type="button" disabled={isBlocked}>
                   <span className="home-file-badge text">DOC</span>
                   <span>
                     <strong>{document.title.length > 10 ? document.title.slice(0, 10) + "..." : document.title}</strong>
-                    {!isRecognizing && <small className={`document-language-badge compact ${document.language}`}>{document.language === "zh" ? "中文" : "英文"}</small>}
+                    {!isBlocked && <small className={`document-language-badge compact ${document.language}`}>{document.language === "zh" ? "中文" : "英文"}</small>}
                   </span>
                 </button>
                 <span className={`parse-status ${status}`}>{statusLabel(status)}</span>
                 <span>{formatTime(document.last_saved_at)}</span>
-                {!isRecognizing ? (
+                {isTimeout ? (
+                <div className="home-doc-actions">
+                  <button onClick={(event) => { event.stopPropagation(); void retryRecognize(document.id); }} type="button">
+                    <RefreshCw size={15} />
+                    重新识别
+                  </button>
+                  <button className="danger" onClick={(event) => { event.stopPropagation(); setShowTrashConfirmId(document.id); }} type="button">
+                    <Trash2 size={15} />
+                    删除
+                  </button>
+                </div>
+                ) : !isRecognizing ? (
                 <div className="home-doc-actions">
                   <button onClick={(event) => { event.stopPropagation(); void onOpenDocumentClick(document.id, onTranslateDocument); }} type="button">
                     <Languages size={15} />

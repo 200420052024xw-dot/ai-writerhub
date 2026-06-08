@@ -281,13 +281,26 @@ export async function getTranslationPreview(
 }
 
 export type FormatConfig = {
-  font: string;
-  fontSize: string;
+  bodyFont: string;
+  bodyFontSize: string;
+  bodyBold: boolean;
   lineHeight: string;
   indent: string;
   align: string;
+  titleFont: string;
+  titleFontSize: string;
+  titleBold: boolean;
+  h1Font: string;
+  h1FontSize: string;
+  h1Bold: boolean;
+  h2Font: string;
+  h2FontSize: string;
+  h2Bold: boolean;
+  h3Font: string;
+  h3FontSize: string;
+  h3Bold: boolean;
   paperSize: string;
-  headingStyle: string;
+  orientation: string;
   margin: string;
   header: string;
   footer: string;
@@ -689,6 +702,18 @@ export async function deleteStoredDocument(documentId: string): Promise<void> {
   if (!response.ok) {
     throw new Error("Document delete failed");
   }
+}
+
+export async function exportDocumentDocx(documentId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/export/docx`);
+  if (!response.ok) throw new Error("Word export failed");
+  return response.blob();
+}
+
+export async function exportDocumentPdf(documentId: string): Promise<Blob> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/export/pdf`);
+  if (!response.ok) throw new Error("PDF export failed");
+  return response.blob();
 }
 
 export type TrashedDocument = StoredDocumentSummary & { deleted_at: string | null };

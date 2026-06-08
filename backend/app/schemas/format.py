@@ -4,13 +4,32 @@ from pydantic import BaseModel, Field
 
 
 class FormatConfig(BaseModel):
-    font: str = ""
-    fontSize: str = ""
+    # 基础设置 - 正文
+    bodyFont: str = ""
+    bodyFontSize: str = ""
+    bodyBold: bool = False
     lineHeight: str = ""
     indent: str = ""
     align: str = ""
+    # 高级设置 - 大标题
+    titleFont: str = ""
+    titleFontSize: str = ""
+    titleBold: bool = True
+    # 高级设置 - 1级标题
+    h1Font: str = ""
+    h1FontSize: str = ""
+    h1Bold: bool = True
+    # 高级设置 - 2级标题
+    h2Font: str = ""
+    h2FontSize: str = ""
+    h2Bold: bool = True
+    # 高级设置 - 3级标题
+    h3Font: str = ""
+    h3FontSize: str = ""
+    h3Bold: bool = True
+    # 高级设置 - 页面
     paperSize: str = ""
-    headingStyle: str = ""
+    orientation: str = ""
     margin: str = ""
     header: str = ""
     footer: str = ""

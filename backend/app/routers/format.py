@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+import re
 
 from app.schemas.format import (
     FormatExportDocxRequest,
@@ -48,7 +49,8 @@ async def export_format_docx(payload: FormatExportDocxRequest) -> StreamingRespo
         raise HTTPException(status_code=400, detail="document content is required")
 
     buffer = build_docx(payload)
-    filename = "writerhub-formatted.docx"
+    safe_title = re.sub(r'[\\/:*?"<>|]', '', payload.title.strip())[:50] or "文档格式整理"
+    filename = f"{safe_title}.docx"
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",

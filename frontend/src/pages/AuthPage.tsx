@@ -169,7 +169,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
         </div>
 
         <div className="hero-illustration hero-illustration-image" aria-hidden="true">
-          <img alt="" src="/left_picture.png" />
+          <img alt="" src="/left_picture.webp" />
         </div>
       </section>
 

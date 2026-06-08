@@ -402,12 +402,10 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
           </div>
 
           <div className="topbar-actions">
-            {(healthState !== "online" || !modelConfigured) && (
-              <div className={`health-pill ${healthState !== "online" ? "offline" : modelStatusClass}`} title={healthState === "online" ? "后端在线" : "后端未连接"}>
-                <span className="health-dot" />
-                {healthState !== "online" ? "后端离线" : modelStatusText}
-              </div>
-            )}
+            <div className={`health-pill ${healthState !== "online" ? "offline" : modelStatusClass}`} title={healthState === "online" ? "后端在线" : "后端未连接"}>
+              <span className="health-dot" />
+              {healthState !== "online" ? "后端离线" : modelStatusText}
+            </div>
             <AccountMenu onLogout={onLogout} onUserChange={onUserChange} user={user} />
           </div>
         </header>
