@@ -3,14 +3,12 @@ import {
   Check,
   Eye,
   EyeOff,
-  FilePenLine,
   LockKeyhole,
   Mail,
   UserRound,
 } from "lucide-react";
 import { loginUser, registerUser, resetPassword, type AuthUser } from "../services/api";
 import { CaptchaCanvas } from "../components/CaptchaCanvas";
-import leftPicture from "../../public/left_picture.png";
 
 type AuthPageProps = {
   onAuthenticated: (user: AuthUser) => void;
@@ -19,12 +17,7 @@ type AuthPageProps = {
 function ProductBrand({ compact = false }: { compact?: boolean }) {
   return (
     <div className={`product-brand ${compact ? "compact" : ""}`}>
-      <span className="product-brand-icon">
-        <FilePenLine />
-        <i>✦</i>
-      </span>
-      <span className="product-brand-name">文枢</span>
-      <span className="product-brand-ai">AI WriterHub</span>
+      <img alt="文枢 AI WriterHub" src="/logo-brand.png" />
     </div>
   );
 }
@@ -163,7 +156,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
   const modeTitle = mode === "login" ? "登录" : mode === "register" ? "注册" : "重置密码";
 
   return (
-    <main className="login-page">
+    <main className={`login-page auth-${mode}`}>
       <div className="login-page-glow login-page-glow-one" />
       <div className="login-page-glow login-page-glow-two" />
 
@@ -176,7 +169,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
         </div>
 
         <div className="hero-illustration hero-illustration-image" aria-hidden="true">
-          <img alt="" src={leftPicture} />
+          <img alt="" src="/left_picture.png" />
         </div>
       </section>
 
@@ -186,8 +179,25 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
           {/* 仅登录显示 logo */}
           {mode === "login" && <ProductBrand />}
 
-          {/* 注册模式不显示标题 */}
-          {mode !== "register" && <h2 className="auth-card-title">{modeTitle}</h2>}
+          {mode === "login" ? (
+            <div className="login-tabs">
+              <button
+                className="active"
+                onClick={() => switchMode("login")}
+                type="button"
+              >
+                登录
+              </button>
+              <button
+                onClick={() => switchMode("register")}
+                type="button"
+              >
+                注册
+              </button>
+            </div>
+          ) : mode === "forgot" ? (
+            <h2 className="auth-card-title">{modeTitle}</h2>
+          ) : null}
 
           <form className="login-form" onSubmit={submit}>
             {/* 用户名 — 三种模式都显示 */}
