@@ -6806,3 +6806,478 @@ button:disabled {
     min-height: 820px;
   }
 }
+
+/* ── Admin Page ── */
+
+.admin-page {
+  padding: 20px 24px;
+  overflow: auto !important;
+}
+
+.admin-tab-switcher {
+  margin-bottom: 20px;
+  width: 100%;
+}
+
+.admin-tab-switcher button {
+  flex: 1;
+}
+
+.admin-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+
+.admin-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.admin-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 260px;
+  padding: 7px 12px;
+  border: 1px solid #dbe5f2;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.admin-search:focus-within {
+  border-color: #0f5bff;
+}
+
+.admin-search svg {
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.admin-search input {
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  width: 100%;
+  color: #1e293b;
+}
+
+.admin-count {
+  font-size: 13px;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.admin-refresh-btn {
+  padding: 6px 14px;
+  border: 1px solid #dbe5f2;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  color: #334155;
+  transition: all 0.15s;
+}
+
+.admin-refresh-btn:hover {
+  background: #f1f5f9;
+}
+
+.admin-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: #94a3b8;
+}
+
+/* ── User List ── */
+
+.admin-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  transition: border-color 0.15s;
+}
+
+.admin-user-row:hover {
+  border-color: #cbd5e1;
+}
+
+.admin-user-row-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.admin-user-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #3b82f6, #60a5fa);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.admin-user-detail {
+  min-width: 0;
+}
+
+.admin-user-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-user-username {
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.admin-role-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.admin-role-tag.admin {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.admin-role-tag.user {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+.admin-member-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #d1fae5;
+  color: #065f46;
+  line-height: 18px;
+}
+
+.admin-user-sub {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-row-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.admin-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid #dbe5f2;
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: #334155;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.admin-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.admin-btn-member-off {
+  color: #0f5bff;
+  border-color: #0f5bff;
+}
+
+.admin-btn-member-off:hover:not(:disabled) {
+  background: #eaf1ff;
+}
+
+.admin-btn-member-on {
+  color: #dc2626;
+  border-color: #fecaca;
+}
+
+.admin-btn-member-on:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.admin-btn-role-off {
+  color: #64748b;
+}
+
+.admin-btn-role-off:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+
+.admin-btn-role-on {
+  color: #d97706;
+  border-color: #fde68a;
+  background: #fffbeb;
+}
+
+.admin-btn-role-on:hover:not(:disabled) {
+  background: #fef3c7;
+}
+
+.admin-btn-del {
+  color: #ef4444;
+  border-color: #fecaca;
+  padding: 5px 8px;
+}
+
+.admin-btn-del:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+.admin-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 24px;
+  background: #1e293b;
+  color: #fff;
+  border-radius: 10px;
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  animation: admin-toast-in 0.2s ease;
+}
+
+@keyframes admin-toast-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── Admin Model Settings ── */
+
+.admin-model-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-model-section {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 20px;
+}
+
+.admin-model-section-head {
+  margin-bottom: 16px;
+}
+
+.admin-model-section-head span {
+  font-size: 12px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.admin-model-section-head h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+  margin-top: 2px;
+}
+
+/* ── Member Card ── */
+
+.home-stat-card.member-card {
+  background: linear-gradient(135deg, #fef3c7, #fde68a);
+  border: 1px solid #f59e0b;
+}
+
+.home-stat-card.member-card svg {
+  color: #d97706;
+}
+
+.home-stat-card.member-card span {
+  color: #92400e;
+}
+
+.home-stat-card.member-card strong {
+  color: #92400e;
+}
+
+/* ── System Model Toggle ── */
+
+.system-model-toggle {
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-bg);
+}
+
+.system-model-toggle span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+/* ── Spin animation ── */
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ── Topbar Model Status Area ── */
+
+.model-status-area {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: relative;
+}
+
+.member-badge-topbar {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #fff;
+  letter-spacing: 0.5px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.health-pill.clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.health-pill.clickable:hover {
+  opacity: 0.85;
+}
+
+/* ── Model Switcher Dropdown ── */
+
+.model-switcher-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 240px;
+  background: var(--bg-card, #fff);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.model-switcher-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.model-switcher-option:hover {
+  background: var(--bg-hover);
+}
+
+.model-switcher-option.active {
+  background: var(--accent-bg);
+}
+
+.model-switcher-option + .model-switcher-option {
+  border-top: 1px solid var(--border-light);
+}
+
+.model-switcher-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.model-switcher-option.active .model-switcher-label {
+  color: var(--accent);
+}
+
+.model-switcher-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.model-switcher-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.model-switcher-settings {
+  width: 100%;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent);
+  text-align: center;
+  transition: opacity 0.15s;
+}
+
+.model-switcher-settings:hover {
+  opacity: 0.75;
+}

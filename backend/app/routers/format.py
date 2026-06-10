@@ -26,6 +26,7 @@ async def parse_format_prompt(payload: FormatParseRequest) -> FormatParseRespons
             api_key=payload.api_key,
             base_url=payload.base_url,
             model=payload.model,
+            use_system_model=payload.use_system_model,
         ),
     )
     return FormatParseResponse(config=config)
@@ -67,5 +68,6 @@ async def organize_format_content(payload: FormatOrganizeRequest) -> FormatOrgan
             api_key=payload.api_key,
             base_url=payload.base_url,
             model=payload.model,
+            use_system_model=payload.use_system_model,
         ),
     )

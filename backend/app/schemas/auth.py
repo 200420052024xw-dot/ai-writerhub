@@ -10,6 +10,8 @@ class UserResponse(BaseModel):
     username: str
     nickname: str
     email: str | None = None
+    role: str = "user"
+    is_member: bool = False
 
 
 class RegisterRequest(BaseModel):

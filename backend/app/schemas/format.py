@@ -37,9 +37,10 @@ class FormatConfig(BaseModel):
 
 
 class FormatParseRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = ""
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    use_system_model: bool = False
     prompt: str = Field(min_length=1, max_length=1000)
     current_config: FormatConfig
 
@@ -62,7 +63,7 @@ class FormatExportDocxRequest(BaseModel):
 
 
 class ModelConnectionTestRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = ""
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
 
@@ -70,9 +71,10 @@ class ModelConnectionTestRequest(BaseModel):
 class FormatOrganizeRequest(BaseModel):
     paragraphs: list[FormatDocumentParagraph] = Field(min_length=1)
     config: FormatConfig
-    api_key: str = Field(min_length=1)
+    api_key: str = ""
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    use_system_model: bool = False
 
 
 class FormatOrganizeResponse(BaseModel):

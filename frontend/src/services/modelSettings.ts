@@ -15,6 +15,7 @@ export type ModelSettings = {
   baseUrl: string;
   defaultModel: string;
   visionModel: string;
+  useSystemModel: boolean;
 };
 
 export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
@@ -64,7 +65,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     baseUrl: "https://api.xiaomimimo.com/v1",
     defaultModel: "mimo-v2.5-pro",
     visionModel: "mimo-v2.5-pro",
-    note: "Xiaomi MiMo官方接口",
+    note: "Xiaomi MiMo 官方接口",
   },
   {
     id: "minimax",
@@ -72,7 +73,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     baseUrl: "https://api.minimaxi.com/v1",
     defaultModel: "MiniMax-M2.7",
     visionModel: "MiniMax-M2.7",
-    note: "MiniMax官方接口",
+    note: "MiniMax 官方接口",
   },
   {
     id: "custom",
@@ -92,6 +93,7 @@ export const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   baseUrl: "https://api.deepseek.com",
   defaultModel: "deepseek-chat",
   visionModel: "deepseek-chat",
+  useSystemModel: false,
 };
 
 export function loadModelSettings(): ModelSettings {

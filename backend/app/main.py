@@ -7,8 +7,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.staticfiles import StaticFiles
 
 from app.core.config import get_settings
-from app.core.database import ensure_database, ensure_tables, run_user_isolation_migration, run_add_email_migration
-from app.routers import assistant, auth, chat_history, config, documents, format, health, markdown, rag, translation
+from app.core.database import ensure_database, ensure_tables, run_user_isolation_migration, run_add_email_migration, run_admin_migration
+from app.routers import admin, assistant, auth, chat_history, config, documents, format, health, markdown, rag, translation
 from app.services.auth_service import resolve_session, set_request_auth
 from app.services.translation_job_service import mark_interrupted_jobs
 
@@ -18,6 +18,7 @@ def create_app() -> FastAPI:
     ensure_tables()
     migrated = run_user_isolation_migration()
     run_add_email_migration()
+    run_admin_migration()
     if migrated:
         storage_root = Path(__file__).resolve().parent / "storage"
         for path in (storage_root / "chroma", storage_root / "documents"):
@@ -77,6 +78,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router, prefix="/api", tags=["documents"])
     app.include_router(rag.router, prefix="/api", tags=["rag"])
     app.include_router(chat_history.router, prefix="/api", tags=["chat-history"])
+    app.include_router(admin.router, prefix="/api", tags=["admin"])
 
     # 前端静态文件（部署时生效，开发时不挂载）
     static_dir = settings.static_dir.strip()

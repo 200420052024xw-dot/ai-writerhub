@@ -1,3 +1,3 @@
-export type NavigationKey = "home" | "editor" | "translate" | "format" | "documents" | "export" | "settings";
+export type NavigationKey = "home" | "editor" | "translate" | "format" | "documents" | "export" | "settings" | "admin";
 
 export type HealthState = "checking" | "online" | "offline";

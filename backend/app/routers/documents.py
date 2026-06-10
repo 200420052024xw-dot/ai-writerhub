@@ -113,14 +113,15 @@ async def index_document(document_id: str, payload: RagIndexRequest | None = Non
 @router.post("/documents/upload", response_model=DocumentDetail)
 async def upload_document(
     file: UploadFile = File(...),
-    api_key: str = Form(...),
+    api_key: str = Form(default=""),
     base_url: str = Form(...),
     model: str = Form(...),
     vision_model: str | None = Form(None),
+    use_system_model: bool = Form(default=False),
 ) -> DocumentDetail:
     return await upload_and_parse_document(
         file,
-        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model),
+        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model, use_system_model=use_system_model),
     )
 
 
@@ -134,14 +135,15 @@ async def upload_quick(
 @router.post("/documents/{document_id}/recognize", response_model=DocumentDetail)
 async def recognize(
     document_id: str,
-    api_key: str = Form(...),
+    api_key: str = Form(default=""),
     base_url: str = Form(...),
     model: str = Form(...),
     vision_model: str | None = Form(None),
+    use_system_model: bool = Form(default=False),
 ) -> DocumentDetail:
     return await recognize_document(
         document_id,
-        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model),
+        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model, use_system_model=use_system_model),
     )
 
 

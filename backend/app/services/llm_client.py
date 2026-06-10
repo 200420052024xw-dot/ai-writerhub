@@ -6,18 +6,37 @@ from pydantic import BaseModel, Field
 from typing import AsyncGenerator
 
 class RuntimeModelConfig(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = Field(default="", max_length=2048)
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
     vision_model: str | None = None
+    use_system_model: bool = False
+
+
+def _get_system_api_key() -> str:
+    """从 system_settings 表读取系统 API Key"""
+    from app.core.database import _ConnectionCtx
+    with _ConnectionCtx() as conn:
+        row = conn.execute(
+            "SELECT setting_value FROM system_settings WHERE setting_key = 'system_model_api_key'"
+        ).fetchone()
+    return row["setting_value"] if row else ""
 
 
 def ensure_runtime_model_config(model_config: RuntimeModelConfig | None) -> RuntimeModelConfig:
     if model_config is None:
         raise HTTPException(status_code=400, detail="请先在设置页配置 API Key、Base URL 和模型名称")
+    api_key = model_config.api_key.strip()
+
+    # 如果使用系统模型，从数据库读取系统 key（不暴露给前端）
+    if model_config.use_system_model or not api_key:
+        system_key = _get_system_api_key()
+        if system_key:
+            api_key = system_key
+
     model_config = model_config.model_copy(
         update={
-            "api_key": model_config.api_key.strip(),
+            "api_key": api_key,
             "base_url": normalize_base_url(model_config.base_url),
             "model": model_config.model.strip(),
         }

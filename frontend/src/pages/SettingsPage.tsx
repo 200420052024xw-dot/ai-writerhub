@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { CheckCircle2, ChevronDown, Database, Eye, EyeOff, KeyRound, PlugZap, RotateCcw, Save, ServerCog, Trash2, X } from "lucide-react";
-import { listTrashedDocuments, restoreDocument, permanentDeleteDocument, type TrashedDocument, testFormatModel } from "../services/api";
-import { loadRagSettings, saveRagSettings, type RagSettings } from "../services/ragSettings";
+import { listTrashedDocuments, restoreDocument, permanentDeleteDocument, type TrashedDocument, testFormatModel, testRagEmbedding, getSystemModelConfig, type AuthUser } from "../services/api";
+import { loadRagSettings, saveRagSettings, RAG_PROVIDER_PRESETS, toRagRuntimeConfig, type RagSettings, type RagProviderId } from "../services/ragSettings";
 import { loadKnowledgeSaveSettings, saveKnowledgeSaveSettings, type KnowledgeSaveSettings } from "../services/knowledgeSaveSettings";
 import {
   loadModelSettings,
@@ -11,13 +11,15 @@ import {
   type ModelSettings,
 } from "../services/modelSettings";
 
-export function SettingsPage() {
+export function SettingsPage({ user }: { user?: AuthUser }) {
   const [settings, setSettings] = useState<ModelSettings>(() => loadModelSettings());
   const [ragSettings, setRagSettings] = useState<RagSettings>(() => loadRagSettings());
   const [kbSaveSettings, setKbSaveSettings] = useState<KnowledgeSaveSettings>(() => loadKnowledgeSaveSettings());
   const [showKey, setShowKey] = useState(false);
+  const [showRagKey, setShowRagKey] = useState(false);
   const [aiSaved, setAiSaved] = useState(false);
   const [ragSaved, setRagSaved] = useState(false);
+  const [systemLoading, setSystemLoading] = useState(false);
   const [kbSaveOpen, setKbSaveOpen] = useState(false);
   const [kbSaveSaved, setKbSaveSaved] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -26,6 +28,7 @@ export function SettingsPage() {
   const [ragTesting, setRagTesting] = useState(false);
   const [ragTestState, setRagTestState] = useState<"idle" | "ok" | "failed">("idle");
   const [ragTestMessage, setRagTestMessage] = useState("");
+  const [rerankError, setRerankError] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
   const [ragOpen, setRagOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
@@ -38,6 +41,12 @@ export function SettingsPage() {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
     if (!preset) return;
     setSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, defaultModel: preset.defaultModel, visionModel: preset.visionModel }));
+  };
+
+  const selectRagProvider = (providerId: RagProviderId) => {
+    const preset = RAG_PROVIDER_PRESETS.find((item) => item.id === providerId);
+    if (!preset) return;
+    setRagSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, model: preset.defaultModel }));
   };
 
   const updateField = (field: keyof ModelSettings, value: string) => {
@@ -68,6 +77,43 @@ export function SettingsPage() {
     window.setTimeout(() => setAiSaved(false), 1800);
   };
 
+  const handleToggleSystemModel = async () => {
+    if (settings.useSystemModel) {
+      // 关闭系统模型，恢复为自定义
+      setSettings((current) => ({ ...current, useSystemModel: false }));
+      return;
+    }
+    // 开启系统模型，从后端获取配置（不获取 api_key）
+    setSystemLoading(true);
+    try {
+      const config = await getSystemModelConfig();
+      const matched = MODEL_PROVIDER_PRESETS.find((p) => p.baseUrl === config.base_url);
+      setSettings((current) => ({
+        ...current,
+        useSystemModel: true,
+        providerId: matched ? matched.id : "custom",
+        apiKey: "", // 系统 key 不存到前端
+        baseUrl: config.base_url,
+        defaultModel: config.model,
+        visionModel: config.vision_model,
+      }));
+      // 同步 RAG 设置
+      setRagSettings((current) => ({
+        ...current,
+        embeddingSource: (config.rag_embedding_source as "local" | "api") || "local",
+        apiKey: config.rag_api_key,
+        baseUrl: config.rag_base_url,
+        model: config.rag_model,
+        enableRerank: config.rag_enable_rerank,
+        rerankModelPath: config.rag_rerank_model_path,
+      }));
+    } catch {
+      // ignore
+    } finally {
+      setSystemLoading(false);
+    }
+  };
+
   const saveRag = () => {
     saveRagSettings(ragSettings);
     setRagSaved(true);
@@ -75,6 +121,7 @@ export function SettingsPage() {
   };
 
   const testConnection = async () => {
+    if (settings.useSystemModel) return; // 系统模型不可测试
     if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
       setTestState("failed");
       setTestMessage("请填写 API Key、Base URL 和模型名称");
@@ -105,7 +152,7 @@ export function SettingsPage() {
     setRagTestState("idle");
     setRagTestMessage("");
     try {
-      await testFormatModel({ api_key: ragSettings.apiKey, base_url: ragSettings.baseUrl, model: ragSettings.model });
+      await testRagEmbedding(toRagRuntimeConfig(ragSettings));
       setRagTestState("ok");
       setRagTestMessage("连接正常");
     } catch (error) {
@@ -185,12 +232,31 @@ export function SettingsPage() {
 
             {aiOpen && (
               <>
+                {user?.is_member && (
+                  <label className="rag-switch-row system-model-toggle">
+                    <span>
+                      <ServerCog size={16} />
+                      使用系统模型
+                    </span>
+                    <button
+                      className={`switch-control ${settings.useSystemModel ? "on" : ""}`}
+                      onClick={() => void handleToggleSystemModel()}
+                      disabled={systemLoading}
+                      type="button"
+                      aria-pressed={settings.useSystemModel}
+                    >
+                      <span />
+                    </button>
+                  </label>
+                )}
+
                 <div className="provider-grid">
                   {MODEL_PROVIDER_PRESETS.map((preset) => (
                     <button
                       className={`provider-card ${settings.providerId === preset.id ? "active" : ""}`}
                       key={preset.id}
                       onClick={() => selectProvider(preset.id)}
+                      disabled={settings.useSystemModel}
                       type="button"
                     >
                       <strong>{preset.name}</strong>
@@ -205,8 +271,9 @@ export function SettingsPage() {
                     <div className="secret-input">
                       <input
                         autoComplete="off"
+                        disabled={settings.useSystemModel}
                         onChange={(event) => updateField("apiKey", event.target.value)}
-                        placeholder="sk-..."
+                        placeholder={settings.useSystemModel ? "系统模型自动管理，无需填写" : "sk-..."}
                         type={showKey ? "text" : "password"}
                         value={settings.apiKey}
                       />
@@ -217,15 +284,15 @@ export function SettingsPage() {
                   </label>
                   <label>
                     <span><ServerCog size={17} />Base URL</span>
-                    <input onChange={(event) => updateField("baseUrl", event.target.value)} value={settings.baseUrl} />
+                    <input disabled={settings.useSystemModel} onChange={(event) => updateField("baseUrl", event.target.value)} value={settings.baseUrl} />
                   </label>
                   <label>
                     <span>默认模型</span>
-                    <input onChange={(event) => updateField("defaultModel", event.target.value)} value={settings.defaultModel} />
+                    <input disabled={settings.useSystemModel} onChange={(event) => updateField("defaultModel", event.target.value)} value={settings.defaultModel} />
                   </label>
                   <label>
                     <span>视觉模型（文档解析）</span>
-                    <input onChange={(event) => updateField("visionModel", event.target.value)} placeholder="留空则使用默认模型" value={settings.visionModel} />
+                    <input disabled={settings.useSystemModel} onChange={(event) => updateField("visionModel", event.target.value)} placeholder="留空则使用默认模型" value={settings.visionModel} />
                   </label>
                 </div>
 
@@ -268,20 +335,46 @@ export function SettingsPage() {
                 </div>
 
                 {ragSettings.embeddingSource === "api" && (
-                  <div className="settings-form">
-                    <label>
-                      <span>Embedding API Key</span>
-                      <input onChange={(event) => updateRagField("apiKey", event.target.value)} placeholder="sk-..." type="password" value={ragSettings.apiKey} />
-                    </label>
-                    <label>
-                      <span>Embedding Base URL</span>
-                      <input onChange={(event) => updateRagField("baseUrl", event.target.value)} placeholder="https://api.example.com/v1" value={ragSettings.baseUrl} />
-                    </label>
-                    <label>
-                      <span>Embedding 模型名</span>
-                      <input onChange={(event) => updateRagField("model", event.target.value)} placeholder="text-embedding-..." value={ragSettings.model} />
-                    </label>
-                  </div>
+                  <>
+                    <div className="provider-grid">
+                      {RAG_PROVIDER_PRESETS.map((preset) => (
+                        <button
+                          className={`provider-card ${ragSettings.providerId === preset.id ? "active" : ""}`}
+                          key={preset.id}
+                          onClick={() => selectRagProvider(preset.id)}
+                          type="button"
+                        >
+                          <strong>{preset.name}</strong>
+                          <span>{preset.note}</span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="settings-form">
+                      <label>
+                        <span><KeyRound size={17} />Embedding API Key</span>
+                        <div className="secret-input">
+                          <input
+                            onChange={(event) => updateRagField("apiKey", event.target.value)}
+                            placeholder="sk-..."
+                            type={showRagKey ? "text" : "password"}
+                            value={ragSettings.apiKey}
+                          />
+                          <button onClick={() => setShowRagKey((value) => !value)} type="button" aria-label="切换密钥显示">
+                            {showRagKey ? <EyeOff size={17} /> : <Eye size={17} />}
+                          </button>
+                        </div>
+                      </label>
+                      <label>
+                        <span><ServerCog size={17} />Embedding Base URL</span>
+                        <input onChange={(event) => updateRagField("baseUrl", event.target.value)} placeholder="https://api.example.com/v1" value={ragSettings.baseUrl} />
+                      </label>
+                      <label>
+                        <span>Embedding 模型名</span>
+                        <input onChange={(event) => updateRagField("model", event.target.value)} placeholder="text-embedding-..." value={ragSettings.model} />
+                      </label>
+                    </div>
+                  </>
                 )}
 
                 <div className="rag-recall-options">
@@ -308,13 +401,34 @@ export function SettingsPage() {
                   <span>启用重排 Rerank</span>
                   <button
                     className={`switch-control ${ragSettings.enableRerank ? "on" : ""}`}
-                    onClick={() => updateRagField("enableRerank", !ragSettings.enableRerank)}
+                    onClick={() => {
+                      setRerankError("");
+                      updateRagField("enableRerank", !ragSettings.enableRerank);
+                    }}
                     type="button"
                     aria-pressed={ragSettings.enableRerank}
                   >
                     <span />
                   </button>
                 </label>
+
+                {ragSettings.embeddingSource === "api" && ragSettings.enableRerank && (
+                  <div className="settings-form" style={{ marginTop: "8px" }}>
+                    <label>
+                      <span>Reranker 模型名</span>
+                      <input
+                        onChange={(event) => {
+                          updateRagField("rerankModelPath", event.target.value);
+                          if (event.target.value.trim()) setRerankError("");
+                        }}
+                        placeholder="Qwen/Qwen3-Reranker-8B"
+                        value={ragSettings.rerankModelPath}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                {rerankError && <div className="settings-test-message failed">{rerankError}</div>}
 
                 <div className="settings-actions">
                   {ragSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}

@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS users (
     nickname VARCHAR(32) NOT NULL,
     email VARCHAR(191) NULL DEFAULT NULL,
     password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(16) NOT NULL DEFAULT 'user',
+    is_member TINYINT(1) NOT NULL DEFAULT 0,
     created_at DATETIME(6) NOT NULL,
     updated_at DATETIME(6) NOT NULL,
     UNIQUE INDEX uq_users_username_normalized (username_normalized),
@@ -123,4 +125,10 @@ CREATE TABLE IF NOT EXISTS rag_chunks (
     content_hash VARCHAR(128) NOT NULL,
     INDEX idx_document_id (document_id),
     FULLTEXT INDEX ft_content (content, document_title)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    setting_key VARCHAR(64) PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_at DATETIME(6) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

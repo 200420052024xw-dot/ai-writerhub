@@ -481,6 +481,7 @@ export function TranslatePage({
     api_key: modelSettings.apiKey,
     base_url: modelSettings.baseUrl,
     model: modelSettings.defaultModel,
+    use_system_model: modelSettings.useSystemModel || undefined,
   };
 
   const pairs: TranslationPair[] = useMemo(() => {
@@ -522,7 +523,8 @@ export function TranslatePage({
       window.setTimeout(() => setMessage(""), 2600);
       return;
     }
-    if (!modelSettings.apiKey.trim() || !modelSettings.baseUrl.trim() || !modelSettings.defaultModel.trim()) {
+    const ready = modelSettings.useSystemModel ? (modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim()) : (modelSettings.apiKey.trim() && modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim());
+    if (!ready) {
       setMessage("请先在设置页配置模型");
       window.setTimeout(() => setMessage(""), 2200);
       return;
@@ -603,7 +605,8 @@ export function TranslatePage({
 
   const runExtractTerms = async () => {
     if (!sourceText.trim()) return;
-    if (!modelSettings.apiKey.trim() || !modelSettings.baseUrl.trim() || !modelSettings.defaultModel.trim()) {
+    const ready = modelSettings.useSystemModel ? (modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim()) : (modelSettings.apiKey.trim() && modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim());
+    if (!ready) {
       setMessage("请先在设置页配置模型");
       window.setTimeout(() => setMessage(""), 2200);
       return;

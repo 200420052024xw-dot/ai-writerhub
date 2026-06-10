@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Plus, Settings, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ClipboardList, FileQuestion, FileText, Home, Languages, Menu, Plus, Settings, Shield, X } from "lucide-react";
 
 const EditorPage = lazy(() => import("../pages/EditorPage").then((m) => ({ default: m.EditorPage })));
 const TranslatePage = lazy(() => import("../pages/TranslatePage").then((m) => ({ default: m.TranslatePage })));
@@ -7,9 +7,10 @@ const FormatPage = lazy(() => import("../pages/FormatPage").then((m) => ({ defau
 const DocumentsPage = lazy(() => import("../pages/DocumentsPage").then((m) => ({ default: m.DocumentsPage })));
 const HomePage = lazy(() => import("../pages/HomePage").then((m) => ({ default: m.HomePage })));
 const SettingsPage = lazy(() => import("../pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+const AdminPage = lazy(() => import("../pages/AdminPage").then((m) => ({ default: m.AdminPage })));
 import { AccountMenu } from "../components/AccountMenu";
-import { loadModelSettings } from "../services/modelSettings";
-import { createStoredDocument, getActiveTranslationJobs, invalidateDocumentListCache, listStoredDocuments, getStoredDocument, type AuthUser, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
+import { loadModelSettings, saveModelSettings, MODEL_PROVIDER_PRESETS } from "../services/modelSettings";
+import { createStoredDocument, getActiveTranslationJobs, invalidateDocumentListCache, listStoredDocuments, getStoredDocument, getSystemModelConfig, type AuthUser, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
 import { userStorage } from "../services/userStorage";
 import type { HealthState, NavigationKey } from "../types";
 
@@ -28,6 +29,8 @@ const navItems = [
   { key: "format", label: "格式整理", icon: ClipboardList },
 ] satisfies Array<{ key: NavigationKey; label: string; icon: typeof FileText }>;
 
+const adminNavItem = { key: "admin" as NavigationKey, label: "管理", icon: Shield };
+
 const pageTitles: Record<NavigationKey, string> = {
   home: "首页",
   editor: "无标题文档",
@@ -36,6 +39,7 @@ const pageTitles: Record<NavigationKey, string> = {
   documents: "知识库",
   export: "导出中心",
   settings: "模型与系统设置",
+  admin: "管理后台",
 };
 
 function loadCachedDocument(key: string): StoredDocumentDetail | null {
@@ -65,6 +69,7 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
   const [fileList, setFileList] = useState<StoredDocumentSummary[]>([]);
   const [fileListLoading, setFileListLoading] = useState(false);
   const [translationJobs, setTranslationJobs] = useState<TranslationJob[]>([]);
+  const [showModelSwitcher, setShowModelSwitcher] = useState(false);
 
   const loadFileList = async (force = false) => {
     setFileListLoading(!force);
@@ -86,6 +91,16 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
       return next;
     });
   };
+
+  useEffect(() => {
+    const handleDocumentsChanged = () => {
+      if (showFileSelector) void loadFileList(true);
+    };
+    window.addEventListener("writerhub:documents-changed", handleDocumentsChanged);
+    return () => {
+      window.removeEventListener("writerhub:documents-changed", handleDocumentsChanged);
+    };
+  }, [showFileSelector]);
 
   const handleSelectFile = async (doc: StoredDocumentSummary) => {
     try {
@@ -131,17 +146,21 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
     });
   };
 
-  const modelConfigured = Boolean(
-    modelSettings.apiKey.trim() && modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim(),
-  );
+  const isSystemModel = modelSettings.useSystemModel === true;
+  const modelConfigured = isSystemModel
+    ? Boolean(modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim())
+    : Boolean(modelSettings.apiKey.trim() && modelSettings.baseUrl.trim() && modelSettings.defaultModel.trim());
 
   const modelStatusClass = modelConfigured ? "online" : "offline";
-  const modelStatusText = modelConfigured ? modelSettings.defaultModel : "暂未配置模型";
-  const fileSelectorDisabled = activePage === "home" || activePage === "documents";
+  const modelStatusText = modelConfigured
+    ? (isSystemModel ? `会员 · ${modelSettings.defaultModel}` : modelSettings.defaultModel)
+    : "暂未配置模型";
+  const canSwitchModel = user.is_member; // 会员可切换模型来源
+  const fileSelectorDisabled = activePage === "home" || activePage === "documents" || activePage === "admin";
   const fileSelectorTitle = fileSelectorDisabled ? "当前页面不可用" : "选择文件";
   const currentPageTitle =
     activePage === "editor"
-      ? editorTitle || "无标题文档"
+      ? editorTitle
       : activePage === "translate"
         ? translateDocument?.title?.trim() || "未选择文件"
         : activePage === "format"
@@ -197,7 +216,8 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
     if (activePage === "translate") return <TranslatePage sourceDocument={translateDocument} />;
     if (activePage === "format") return <FormatPage sourceDocument={formatDocument} />;
     if (activePage === "documents") return <DocumentsPage />;
-    if (activePage === "settings") return <SettingsPage />;
+    if (activePage === "settings") return <SettingsPage user={user} />;
+    if (activePage === "admin") return <AdminPage />;
 
     return (
       <section className="empty-workspace">
@@ -257,6 +277,13 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
   }, [showFileSelector]);
 
   useEffect(() => {
+    if (!showModelSwitcher) return;
+    const close = () => setShowModelSwitcher(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [showModelSwitcher]);
+
+  useEffect(() => {
     const handleDeleted = (event: Event) => {
       const documentId = (event as CustomEvent<{ documentId?: string }>).detail?.documentId;
       if (!documentId) return;
@@ -285,6 +312,32 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
   const openPage = (page: NavigationKey) => {
     setActivePage(page);
     setModelSettings(loadModelSettings());
+  };
+
+  const handleSwitchToSystemModel = async () => {
+    try {
+      const config = await getSystemModelConfig();
+      const matched = MODEL_PROVIDER_PRESETS.find((p) => p.baseUrl === config.base_url);
+      saveModelSettings({
+        ...modelSettings,
+        useSystemModel: true,
+        providerId: matched ? matched.id : "custom",
+        apiKey: "", // 系统 key 不存储到前端
+        baseUrl: config.base_url,
+        defaultModel: config.model,
+        visionModel: config.vision_model,
+      });
+      setModelSettings(loadModelSettings());
+    } catch {
+      // ignore
+    }
+    setShowModelSwitcher(false);
+  };
+
+  const handleSwitchToCustomModel = () => {
+    saveModelSettings({ ...modelSettings, useSystemModel: false });
+    setModelSettings(loadModelSettings());
+    setShowModelSwitcher(false);
   };
 
   return (
@@ -318,6 +371,20 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
               </button>
             );
           })}
+          {user.role === "admin" && (() => {
+            const Icon = adminNavItem.icon;
+            return (
+              <button
+                className={`nav-item ${activePage === "admin" ? "active" : ""}`}
+                onClick={() => openPage(adminNavItem.key)}
+                title={sidebarCollapsed ? adminNavItem.label : undefined}
+                type="button"
+              >
+                <Icon size={20} />
+                <span>{adminNavItem.label}</span>
+              </button>
+            );
+          })()}
         </nav>
 
         <button
@@ -402,9 +469,46 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
           </div>
 
           <div className="topbar-actions">
-            <div className={`health-pill ${healthState !== "online" ? "offline" : modelStatusClass}`} title={healthState === "online" ? "后端在线" : "后端未连接"}>
-              <span className="health-dot" />
-              {healthState !== "online" ? "后端离线" : modelStatusText}
+            <div className="model-status-area" onClick={(e) => e.stopPropagation()}>
+              {user.is_member && <span className="member-badge-topbar">会员</span>}
+              <div
+                className={`health-pill ${healthState !== "online" ? "offline" : modelStatusClass}${canSwitchModel ? " clickable" : ""}`}
+                title={healthState === "online" ? (isSystemModel ? "当前使用会员模型" : "当前使用自定义模型") : "后端未连接"}
+                onClick={() => canSwitchModel && setShowModelSwitcher((v) => !v)}
+                role={canSwitchModel ? "button" : undefined}
+              >
+                <span className="health-dot" />
+                {healthState !== "online" ? "后端离线" : modelStatusText}
+              </div>
+              {showModelSwitcher && canSwitchModel && (
+                <div className="model-switcher-dropdown">
+                  <button
+                    className={`model-switcher-option ${isSystemModel ? "active" : ""}`}
+                    onClick={() => void handleSwitchToSystemModel()}
+                    type="button"
+                  >
+                    <span className="model-switcher-label">会员模型</span>
+                    <span className="model-switcher-desc">使用系统提供的 API 模型</span>
+                  </button>
+                  <button
+                    className={`model-switcher-option ${!isSystemModel ? "active" : ""}`}
+                    onClick={handleSwitchToCustomModel}
+                    type="button"
+                  >
+                    <span className="model-switcher-label">自定义模型</span>
+                    <span className="model-switcher-desc">使用自己的 API Key</span>
+                  </button>
+                  <div className="model-switcher-footer">
+                    <button
+                      className="model-switcher-settings"
+                      onClick={() => { setShowModelSwitcher(false); openPage("settings"); }}
+                      type="button"
+                    >
+                      前往设置页配置 →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             <AccountMenu onLogout={onLogout} onUserChange={onUserChange} user={user} />
           </div>

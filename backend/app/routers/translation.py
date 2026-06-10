@@ -26,6 +26,7 @@ def runtime_model_config(payload_config) -> RuntimeModelConfig:
         api_key=payload_config.api_key,
         base_url=payload_config.base_url,
         model=payload_config.model,
+        use_system_model=getattr(payload_config, "use_system_model", False),
     )
 
 

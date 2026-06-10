@@ -54,7 +54,12 @@ function parseStatus(document: StoredDocumentSummary, recognizingDocs?: Map<stri
   }
   if (document.rag_status === "indexed") return "parsed";
   if (document.rag_status === "indexing") return "indexing";
-  if (document.rag_status === "recognizing") return "recognizing";
+  if (document.rag_status === "recognizing") {
+    // Server-side recognizing: check if it's been stuck for more than 5 minutes
+    const savedAt = new Date(document.last_saved_at).getTime();
+    if (!Number.isNaN(savedAt) && Date.now() - savedAt > RECOGNIZE_TIMEOUT_MS) return "recognize-timeout";
+    return "recognizing";
+  }
   if (document.rag_status === "failed") return "failed";
   if (document.rag_status === "outdated") return "updated";
   return "pending";
@@ -154,6 +159,16 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     void refresh();
   }, []);
 
+  useEffect(() => {
+    const handleDocumentsChanged = () => {
+      void refresh(true);
+    };
+    window.addEventListener("writerhub:documents-changed", handleDocumentsChanged);
+    return () => {
+      window.removeEventListener("writerhub:documents-changed", handleDocumentsChanged);
+    };
+  }, []);
+
   // Periodically check for timed-out recognizing docs
   useEffect(() => {
     if (recognizingDocs.size === 0) return;
@@ -183,7 +198,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
 
   const retryRecognize = async (documentId: string) => {
     const settings = loadModelSettings();
-    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+    const ready = settings.useSystemModel ? (settings.baseUrl.trim() && settings.defaultModel.trim()) : (settings.apiKey.trim() && settings.baseUrl.trim() && settings.defaultModel.trim());
+    if (!ready) {
       showMessage("请先在设置页配置支持图片输入的模型");
       return;
     }
@@ -200,6 +216,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
           base_url: settings.baseUrl,
           model: settings.defaultModel,
           vision_model: settings.visionModel || undefined,
+          use_system_model: settings.useSystemModel || undefined,
         }),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("识别超时")), RECOGNIZE_TIMEOUT_MS),
@@ -252,7 +269,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     if (selectedFiles.length === 0) return;
 
     const settings = loadModelSettings();
-    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+    const ready = settings.useSystemModel ? (settings.baseUrl.trim() && settings.defaultModel.trim()) : (settings.apiKey.trim() && settings.baseUrl.trim() && settings.defaultModel.trim());
+    if (!ready) {
       showMessage("请先在设置页配置支持图片输入的模型");
       return;
     }
@@ -297,6 +315,7 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
             base_url: settings.baseUrl,
             model: settings.defaultModel,
             vision_model: settings.visionModel || undefined,
+            use_system_model: settings.useSystemModel || undefined,
           }),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("识别超时")), RECOGNIZE_TIMEOUT_MS),

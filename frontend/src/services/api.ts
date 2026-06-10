@@ -1,6 +1,18 @@
 // 生产构建时为空字符串（同源部署），开发时由 vite.config.ts 注入后端地址
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
+/** 兼容 HTTP 环境（crypto.randomUUID 仅在安全上下文下可用） */
+export function randomId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
   const response = await window.fetch(input, { ...init, credentials: "include" });
   if (response.status === 401) {
@@ -16,6 +28,8 @@ export type AuthUser = {
   username: string;
   nickname: string;
   email: string | null;
+  role: string;
+  is_member: boolean;
 };
 
 async function authJson(response: Response): Promise<AuthUser> {
@@ -155,6 +169,7 @@ export type AIModelConfig = {
   api_key: string;
   base_url: string;
   model: string;
+  use_system_model?: boolean;
 };
 
 export type TranslationPair = {
@@ -318,6 +333,7 @@ export async function parseFormatPrompt(payload: {
   api_key: string;
   base_url: string;
   model: string;
+  use_system_model?: boolean;
   prompt: string;
   current_config: FormatConfig;
 }): Promise<{ config: FormatConfig }> {
@@ -406,6 +422,28 @@ export async function testFormatModel(payload: {
   }
 }
 
+export async function testRagEmbedding(payload: RagRuntimeConfig): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/rag/test-embedding`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let message = "Embedding connection test failed";
+    try {
+      const data = JSON.parse(text);
+      message = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail || data);
+    } catch {
+      message = text;
+    }
+    throw new Error(message || "Embedding connection test failed");
+  }
+}
+
 export type StoredDocumentSummary = {
   id: string;
   title: string;
@@ -447,6 +485,11 @@ export function invalidateDocumentListCache() {
   _documentListCache = null;
 }
 
+export function notifyDocumentsChanged(document?: StoredDocumentSummary) {
+  invalidateDocumentListCache();
+  window.dispatchEvent(new CustomEvent("writerhub:documents-changed", { detail: { document } }));
+}
+
 export async function listStoredDocuments(forceRefresh = false): Promise<{ documents: StoredDocumentSummary[] }> {
   if (!forceRefresh && _documentListCache) {
     return { documents: _documentListCache };
@@ -482,7 +525,9 @@ export async function createStoredDocument(payload: {
   if (!response.ok) {
     throw new Error(await response.text() || "Document create failed");
   }
-  return response.json();
+  const document = await response.json();
+  notifyDocumentsChanged(document);
+  return document;
 }
 
 export async function saveStoredDocument(
@@ -502,7 +547,9 @@ export async function saveStoredDocument(
   if (!response.ok) {
     throw new Error(await response.text() || "Document save failed");
   }
-  return response.json();
+  const document = await response.json();
+  notifyDocumentsChanged(document);
+  return document;
 }
 
 export async function saveStoredDocumentParagraphs(
@@ -517,7 +564,9 @@ export async function saveStoredDocumentParagraphs(
   if (!response.ok) {
     throw new Error(await response.text() || "Document paragraphs save failed");
   }
-  return response.json();
+  const document = await response.json();
+  notifyDocumentsChanged(document);
+  return document;
 }
 
 export async function indexStoredDocument(documentId: string): Promise<StoredDocumentDetail> {
@@ -752,6 +801,7 @@ export async function uploadStoredDocument(payload: {
   base_url: string;
   model: string;
   vision_model?: string;
+  use_system_model?: boolean;
 }): Promise<StoredDocumentDetail> {
   const formData = new FormData();
   formData.append("file", payload.file);
@@ -759,6 +809,7 @@ export async function uploadStoredDocument(payload: {
   formData.append("base_url", payload.base_url);
   formData.append("model", payload.model);
   if (payload.vision_model) formData.append("vision_model", payload.vision_model);
+  if (payload.use_system_model) formData.append("use_system_model", "true");
 
   const response = await fetch(`${API_BASE_URL}/api/documents/upload`, {
     method: "POST",
@@ -792,12 +843,14 @@ export async function recognizeDocument(payload: {
   base_url: string;
   model: string;
   vision_model?: string;
+  use_system_model?: boolean;
 }): Promise<StoredDocumentDetail> {
   const formData = new FormData();
   formData.append("api_key", payload.api_key);
   formData.append("base_url", payload.base_url);
   formData.append("model", payload.model);
   if (payload.vision_model) formData.append("vision_model", payload.vision_model);
+  if (payload.use_system_model) formData.append("use_system_model", "true");
 
   const response = await fetch(`${API_BASE_URL}/api/documents/${payload.documentId}/recognize`, {
     method: "POST",
@@ -807,5 +860,100 @@ export async function recognizeDocument(payload: {
     const detail = await response.text();
     throw new Error(detail || "Document recognize failed");
   }
+  return response.json();
+}
+
+// ── Admin API ──
+
+export type AdminUserItem = {
+  id: string;
+  username: string;
+  nickname: string;
+  email: string | null;
+  role: string;
+  is_member: boolean;
+  created_at: string;
+};
+
+export type SystemModelConfig = {
+  provider: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+  vision_model: string;
+  rag_embedding_source: string;
+  rag_api_key: string;
+  rag_base_url: string;
+  rag_model: string;
+  rag_enable_rerank: boolean;
+  rag_rerank_model_path: string;
+};
+
+export async function adminListUsers(): Promise<{ users: AdminUserItem[] }> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users`);
+  if (!response.ok) throw new Error(await response.text() || "Admin user list failed");
+  return response.json();
+}
+
+export async function adminUpdateUserRole(userId: string, role: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/role`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Role update failed");
+}
+
+export async function adminUpdateUserMember(userId: string, isMember: boolean): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}/member`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_member: isMember }),
+  });
+  if (!response.ok) throw new Error(await response.text() || "Member update failed");
+}
+
+export async function adminDeleteUser(userId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/users/${userId}`, { method: "DELETE" });
+  if (!response.ok) throw new Error(await response.text() || "User delete failed");
+}
+
+export async function adminGetSystemSettings(): Promise<{ settings: Record<string, string> }> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/system-settings`);
+  if (!response.ok) throw new Error(await response.text() || "System settings load failed");
+  return response.json();
+}
+
+export async function adminUpdateSystemSettings(settings: Record<string, string>): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/system-settings`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ settings }),
+  });
+  if (!response.ok) throw new Error(await response.text() || "System settings update failed");
+}
+
+export async function adminTestSystemModel(payload: { api_key: string; base_url: string; model: string }): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/admin/system-settings/test-model`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = "Model test failed";
+    try {
+      const data = JSON.parse(text);
+      message = typeof data.detail === "string" ? data.detail : message;
+    } catch {
+      message = text || message;
+    }
+    throw new Error(message);
+  }
+}
+
+export async function getSystemModelConfig(): Promise<SystemModelConfig> {
+  const response = await fetch(`${API_BASE_URL}/api/system/model-config`);
+  if (!response.ok) throw new Error(await response.text() || "System model config failed");
   return response.json();
 }

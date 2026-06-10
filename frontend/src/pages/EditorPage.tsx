@@ -30,7 +30,7 @@ import {
   Highlighter,
   Send,
 } from "lucide-react";
-import { API_BASE_URL, apiFetch } from "../services/api";
+import { API_BASE_URL, apiFetch, randomId } from "../services/api";
 import { userStorage } from "../services/userStorage";
 import {
   getDocumentAssistantHistory,
@@ -923,7 +923,10 @@ async function streamAssistantReply({
   onDelta: (delta: string) => void;
 }) {
   const settings = loadModelSettings();
-  if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+  const modelReady = settings.useSystemModel
+    ? Boolean(settings.baseUrl.trim() && settings.defaultModel.trim())
+    : Boolean(settings.apiKey.trim() && settings.baseUrl.trim() && settings.defaultModel.trim());
+  if (!modelReady) {
     throw new Error("暂未配置模型");
   }
 
@@ -938,6 +941,7 @@ async function streamAssistantReply({
         api_key: settings.apiKey,
         base_url: settings.baseUrl,
         model: settings.defaultModel,
+        use_system_model: settings.useSystemModel || undefined,
         messages: [
           ...messages.map((message) => ({
             role: message.role,
@@ -1117,7 +1121,7 @@ export function EditorPage({
     if (loadedDocumentIdRef.current === documentId) return;
     loadedDocumentIdRef.current = documentId;
     loadingDocumentRef.current = true;
-    const nextTitle = titleFromParagraphs(documentParagraphs, externalDocumentTitle || "");
+    const nextTitle = externalDocumentTitle === "" ? "" : titleFromParagraphs(documentParagraphs, externalDocumentTitle || "");
     setDocumentTitle(nextTitle);
     onTitleChange?.(nextTitle);
     editor.commands.setContent(markdownToHtml(bodyMarkdownFromParagraphs(documentParagraphs) || documentContent || ""));
@@ -1138,7 +1142,7 @@ export function EditorPage({
       if (cancelled) return;
       setAssistantMessages(
         history.messages.map((message) => ({
-          id: crypto.randomUUID(),
+          id: randomId(),
           role: message.role === "assistant" ? "assistant" : "user",
           content: message.content,
         })),
@@ -1263,12 +1267,12 @@ export function EditorPage({
     if (!content || assistantStreaming) return;
 
     const userMessage: AssistantMessage = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       role: "user",
       content,
     };
     const assistantMessage: AssistantMessage = {
-      id: crypto.randomUUID(),
+      id: randomId(),
       role: "assistant",
       content: "",
     };

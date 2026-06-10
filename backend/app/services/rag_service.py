@@ -25,6 +25,21 @@ VECTOR_TOP_K = 12
 FINAL_TOP_K = 5
 
 
+def embeddings_url(base_url: str) -> str:
+    url = base_url.strip().rstrip("/} \t\r\n")
+    if url.endswith("/embeddings") or url.endswith("/embeddings/multimodal"):
+        return url
+    return f"{url}/embeddings"
+
+
+def provider_base_url(base_url: str) -> str:
+    url = base_url.strip().rstrip("/} \t\r\n")
+    for suffix in ("/embeddings/multimodal", "/embeddings"):
+        if url.endswith(suffix):
+            return url[: -len(suffix)]
+    return url
+
+
 def runtime_rag_config(config: RagRuntimeConfig | None = None) -> RagRuntimeConfig:
     if config:
         return config
@@ -64,13 +79,42 @@ async def embed_texts(texts: list[str], config: RagRuntimeConfig) -> list[list[f
     if config.embedding_source == "api":
         if not config.api_key.strip() or not config.base_url.strip() or not config.model.strip():
             raise HTTPException(status_code=400, detail="API embedding 配置不完整")
-        url = f"{config.base_url.rstrip('/')}/embeddings"
-        headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
-        payload = {"model": config.model, "input": texts}
-        async with httpx.AsyncClient(timeout=None) as client:
-            response = await client.post(url, headers=headers, json=payload)
-            response.raise_for_status()
+
+        base_url = config.base_url.strip().rstrip("/} \t\r\n")
+
+        # 火山方舟使用不同的端点和格式
+        if "volces.com" in base_url:
+            url = base_url if base_url.endswith("/embeddings/multimodal") else f"{base_url}/embeddings/multimodal"
+            headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+            # 火山方舟需要将文本包装为多模态格式
+            input_items = [{"type": "text", "text": text} for text in texts]
+            payload = {"model": config.model, "input": input_items, "encoding_format": "float"}
+        else:
+            # 轨迹流动 (SiliconFlow) 和其他 OpenAI 兼容接口
+            url = embeddings_url(base_url)
+            headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+            payload = {"model": config.model, "input": texts}
+
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                response = await client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=502, detail=f"Embedding provider returned {exc.response.status_code}: {exc.response.text}") from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=502, detail=f"Embedding provider request failed: {exc}") from exc
         data = response.json()
+
+        # 火山方舟返回格式不同
+        if "volces.com" in base_url:
+            # 火山方舟返回 data.embedding 或 data[0].embedding
+            embedding_data = data.get("data", {})
+            if isinstance(embedding_data, dict):
+                return [embedding_data.get("embedding", [])]
+            elif isinstance(embedding_data, list):
+                return [item.get("embedding", []) for item in embedding_data]
+            return []
+
         return [item["embedding"] for item in data["data"]]
 
     model = load_local_embedding_model(config.local_model_path)
@@ -82,6 +126,13 @@ async def embed_texts(texts: list[str], config: RagRuntimeConfig) -> list[list[f
         show_progress_bar=False,
     )
     return embeddings.tolist()
+
+
+async def test_embedding_model(config: RagRuntimeConfig) -> None:
+    test_config = config.model_copy(update={"embedding_source": "api"})
+    vectors = await embed_texts(["Hello, world!"], test_config)
+    if not vectors or not vectors[0]:
+        raise HTTPException(status_code=502, detail="Embedding provider returned an empty vector")
 
 
 def clean_document_content(content: str) -> str:
@@ -333,9 +384,43 @@ def merge_results(vector_items: list[RagSearchResult], fts_items: list[RagSearch
     return sorted(merged.values(), key=lambda item: item.score, reverse=True)
 
 
-def maybe_rerank(question: str, items: list[RagSearchResult], config: RagRuntimeConfig) -> list[RagSearchResult]:
-    if not config.enable_rerank or not items:
-        return items
+async def api_rerank(question: str, items: list[RagSearchResult], config: RagRuntimeConfig) -> list[RagSearchResult]:
+    """\u4f7f\u7528 SiliconFlow Reranker API \u8fdb\u884c\u91cd\u6392\u5e8f"""
+    if not config.api_key.strip() or not config.rerank_model_path.strip():
+        # \u56de\u9000\u5230\u672c\u5730 rerank
+        return local_rerank(question, items)
+
+    url = f"{provider_base_url(config.base_url)}/rerank"
+    headers = {"Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": config.rerank_model_path,
+        "query": question,
+        "documents": [item.content for item in items],
+        "top_n": len(items),
+        "return_documents": False,
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+        data = response.json()
+        results = data.get("results", [])
+
+        # \u6784\u5efa\u7d22\u5f15\u5230\u7ed3\u679c\u7684\u6620\u5c04
+        reranked_map = {r["index"]: r["relevance_score"] for r in results}
+        reranked = []
+        for i, item in enumerate(items):
+            score = reranked_map.get(i, item.score)
+            reranked.append(item.model_copy(update={"score": score}))
+        return sorted(reranked, key=lambda x: x.score, reverse=True)
+    except Exception:
+        # API \u8c03\u7528\u5931\u8d25\u65f6\u56de\u9000\u5230\u672c\u5730 rerank
+        return local_rerank(question, items)
+
+
+def local_rerank(question: str, items: list[RagSearchResult]) -> list[RagSearchResult]:
+    """\u672c\u5730\u8bcd\u6cd5\u5339\u914d rerank"""
     query_terms = set(re.findall(r"[\w\u4e00-\u9fff]+", question.lower()))
     if not query_terms:
         return items
@@ -345,6 +430,18 @@ def maybe_rerank(question: str, items: list[RagSearchResult], config: RagRuntime
         lexical = len(query_terms & content_terms) / max(1, len(query_terms))
         reranked.append(item.model_copy(update={"score": item.score * 0.7 + lexical * 0.3}))
     return sorted(reranked, key=lambda result: result.score, reverse=True)
+
+
+async def maybe_rerank(question: str, items: list[RagSearchResult], config: RagRuntimeConfig) -> list[RagSearchResult]:
+    if not config.enable_rerank or not items:
+        return items
+
+    # \u5982\u679c\u4f7f\u7528 API embedding \u4e14\u6709 reranker \u6a21\u578b\uff0c\u4f7f\u7528 API rerank
+    if config.embedding_source == "api" and config.rerank_model_path.strip():
+        return await api_rerank(question, items, config)
+
+    # \u5426\u5219\u4f7f\u7528\u672c\u5730 rerank
+    return local_rerank(question, items)
 
 
 async def retrieve(question: str, document_ids: list[str], config: RagRuntimeConfig | None = None) -> list[RagSearchResult]:
@@ -358,7 +455,7 @@ async def retrieve(question: str, document_ids: list[str], config: RagRuntimeCon
         items = merge_results(vector_items, fts_search(question, document_ids))
     else:
         items = normalize_scores(vector_items)
-    items = maybe_rerank(question, items, rag_config)
+    items = await maybe_rerank(question, items, rag_config)
     return items[:FINAL_TOP_K]
 
 

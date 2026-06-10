@@ -9,7 +9,8 @@ class AssistantMessage(BaseModel):
 
 
 class AssistantChatRequest(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = ""
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    use_system_model: bool = False
     messages: list[AssistantMessage]

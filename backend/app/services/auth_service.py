@@ -55,7 +55,14 @@ def validate_password(password: str) -> str:
 
 
 def user_from_row(row) -> UserResponse:
-    return UserResponse(id=row["id"], username=row["username"], nickname=row["nickname"], email=row.get("email"))
+    return UserResponse(
+        id=row["id"],
+        username=row["username"],
+        nickname=row["nickname"],
+        email=row.get("email"),
+        role=row.get("role", "user"),
+        is_member=bool(row.get("is_member", 0)),
+    )
 
 
 def create_user(username: str, nickname: str, password: str, email: str | None = None) -> UserResponse:
@@ -145,7 +152,7 @@ def resolve_session(token: str | None) -> tuple[UserResponse, str] | None:
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT u.id, u.username, u.nickname, u.email, s.expires_at
+            SELECT u.id, u.username, u.nickname, u.email, u.role, u.is_member, s.expires_at
             FROM user_sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.token_hash = %s
@@ -189,7 +196,7 @@ def current_session_hash() -> str:
 def get_current_user() -> UserResponse:
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, username, nickname, email FROM users WHERE id = %s",
+            "SELECT id, username, nickname, email, role, is_member FROM users WHERE id = %s",
             (current_user_id(),),
         ).fetchone()
     if not row:

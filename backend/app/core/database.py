@@ -225,3 +225,37 @@ def run_add_email_migration() -> bool:
         return True
     finally:
         conn.close()
+
+
+def run_admin_migration() -> bool:
+    """Add role/is_member columns to users and create system_settings table."""
+    migration_key = "2026_06_08_admin_v1"
+    params = _connection_params()
+    conn = pymysql.connect(**params)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM schema_migrations WHERE migration_key = %s", (migration_key,))
+            if cur.fetchone():
+                return False
+
+            if not _column_exists(cur, "users", "role"):
+                cur.execute("ALTER TABLE users ADD COLUMN role VARCHAR(16) NOT NULL DEFAULT 'user' AFTER password_hash")
+            if not _column_exists(cur, "users", "is_member"):
+                cur.execute("ALTER TABLE users ADD COLUMN is_member TINYINT(1) NOT NULL DEFAULT 0 AFTER role")
+
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    setting_key VARCHAR(64) PRIMARY KEY,
+                    setting_value TEXT NOT NULL,
+                    updated_at DATETIME(6) NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """)
+
+            cur.execute(
+                "INSERT INTO schema_migrations (migration_key, applied_at) VALUES (%s, %s)",
+                (migration_key, mysql_datetime()),
+            )
+        return True
+    finally:
+        conn.close()

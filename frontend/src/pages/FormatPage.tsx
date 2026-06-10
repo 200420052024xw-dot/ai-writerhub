@@ -200,9 +200,10 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
     const prompt = formatPrompt.trim();
     if (!prompt) { showMessage("请先输入格式需求"); return; }
     const s = loadModelSettings();
-    if (!s.apiKey.trim() || !s.baseUrl.trim() || !s.defaultModel.trim()) { showMessage("请先在设置页配置模型"); return; }
+    const ready = s.useSystemModel ? (s.baseUrl.trim() && s.defaultModel.trim()) : (s.apiKey.trim() && s.baseUrl.trim() && s.defaultModel.trim());
+    if (!ready) { showMessage("请先在设置页配置模型"); return; }
     setParsing(true);
-    try { const r = await parseFormatPrompt({ api_key: s.apiKey, base_url: s.baseUrl, model: s.defaultModel, prompt, current_config: config }); setConfig(r.config); showMessage("已解析格式需求"); } catch { showMessage("智能解析失败"); } finally { setParsing(false); }
+    try { const r = await parseFormatPrompt({ api_key: s.apiKey, base_url: s.baseUrl, model: s.defaultModel, use_system_model: s.useSystemModel || undefined, prompt, current_config: config }); setConfig(r.config); showMessage("已解析格式需求"); } catch { showMessage("智能解析失败"); } finally { setParsing(false); }
   };
 
   const startGenerating = async () => {

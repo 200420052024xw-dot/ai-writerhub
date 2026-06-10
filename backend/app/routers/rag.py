@@ -1,13 +1,19 @@
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.schemas.rag import RagQueryRequest
+from app.schemas.rag import RagQueryRequest, RagRuntimeConfig
 from app.services.llm_client import RuntimeModelConfig
 from app.services.document_service import get_document
-from app.services.rag_service import stream_rag_answer
+from app.services.rag_service import stream_rag_answer, test_embedding_model
 
 
 router = APIRouter()
+
+
+@router.post("/rag/test-embedding")
+async def test_rag_embedding(payload: RagRuntimeConfig) -> dict[str, bool]:
+    await test_embedding_model(payload)
+    return {"ok": True}
 
 
 @router.post("/rag/query/stream")
@@ -23,6 +29,7 @@ async def query_rag_stream(payload: RagQueryRequest) -> StreamingResponse:
                 api_key=payload.chat_config.api_key,
                 base_url=payload.chat_config.base_url,
                 model=payload.chat_config.model,
+                use_system_model=payload.chat_config.use_system_model,
             ),
         ),
         media_type="text/event-stream",

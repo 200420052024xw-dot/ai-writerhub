@@ -23,9 +23,10 @@ class TranslationOptions(BaseModel):
 
 
 class AIModelConfig(BaseModel):
-    api_key: str = Field(min_length=1)
+    api_key: str = ""
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    use_system_model: bool = False
 
 
 class TranslationSourceParagraph(BaseModel):

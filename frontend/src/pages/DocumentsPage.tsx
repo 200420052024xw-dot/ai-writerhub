@@ -204,7 +204,8 @@ export function DocumentsPage() {
       return;
     }
     const settings = loadModelSettings();
-    if (!settings.apiKey.trim() || !settings.baseUrl.trim() || !settings.defaultModel.trim()) {
+    const ready = settings.useSystemModel ? (settings.baseUrl.trim() && settings.defaultModel.trim()) : (settings.apiKey.trim() && settings.baseUrl.trim() && settings.defaultModel.trim());
+    if (!ready) {
       setMessage("请先在设置页配置聊天模型");
       return;
     }
@@ -244,6 +245,7 @@ export function DocumentsPage() {
             api_key: settings.apiKey,
             base_url: settings.baseUrl,
             model: settings.defaultModel,
+            use_system_model: settings.useSystemModel || undefined,
           },
         },
         (event) => {
