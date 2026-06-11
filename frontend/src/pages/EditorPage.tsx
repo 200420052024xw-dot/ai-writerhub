@@ -28,7 +28,10 @@ import {
   Heading2,
   Heading3,
   Highlighter,
+  History,
+  Plus,
   Send,
+  Trash2,
 } from "lucide-react";
 import { API_BASE_URL, apiFetch, randomId } from "../services/api";
 import { userStorage } from "../services/userStorage";
@@ -44,6 +47,7 @@ import { loadModelSettings } from "../services/modelSettings";
 import { CalloutBlock } from "../extensions/CalloutBlock";
 import { ToggleBlock } from "../extensions/ToggleBlock";
 import { StructureFold } from "../extensions/StructureFold";
+import { NoNestedSpecialBlocks } from "../extensions/NoNestedSpecialBlocks";
 
 type CopyState = "idle" | "done" | "failed";
 type AssistantMessage = {
@@ -51,6 +55,16 @@ type AssistantMessage = {
   role: "user" | "assistant";
   content: string;
 };
+
+type AssistantConversation = {
+  id: string;
+  title: string;
+  messages: AssistantMessage[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+const MAX_ASSISTANT_CONTEXT_LENGTH = 24000;
 
 const MARKDOWN_PATTERNS: Array<[string, RegExp]> = [
   ["heading", /^\s{0,3}#{1,6}\s+\S+/m],
@@ -87,6 +101,62 @@ const BG_COLORS = [
 ];
 
 const initialContent = `<p></p>`;
+
+function assistantHistoryStorageKey(documentId: string) {
+  return `editorAssistantConversations.${documentId}`;
+}
+
+function assistantConversationTitle(messages: AssistantMessage[]) {
+  const firstUserMessage = messages.find((message) => message.role === "user" && message.content.trim());
+  const title = firstUserMessage?.content.trim().replace(/\s+/g, " ");
+  return title ? title.slice(0, 24) : "新对话";
+}
+
+function createAssistantConversation(messages: AssistantMessage[] = []): AssistantConversation {
+  const now = new Date().toISOString();
+  return {
+    id: randomId(),
+    title: assistantConversationTitle(messages),
+    messages,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function parseAssistantConversations(raw: string | null): AssistantConversation[] {
+  if (!raw) return [];
+  try {
+    const rows = JSON.parse(raw);
+    if (!Array.isArray(rows)) return [];
+    return rows
+      .map((row) => ({
+        id: typeof row.id === "string" ? row.id : randomId(),
+        title: typeof row.title === "string" && row.title.trim() ? row.title : "新对话",
+        createdAt: typeof row.createdAt === "string" ? row.createdAt : new Date().toISOString(),
+        updatedAt: typeof row.updatedAt === "string" ? row.updatedAt : new Date().toISOString(),
+        messages: Array.isArray(row.messages)
+          ? row.messages
+              .filter((message: AssistantMessage) => (message.role === "user" || message.role === "assistant") && typeof message.content === "string")
+              .map((message: AssistantMessage) => ({
+                id: typeof message.id === "string" ? message.id : randomId(),
+                role: message.role,
+                content: message.content,
+              }))
+          : [],
+      }))
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+  } catch {
+    return [];
+  }
+}
+
+function isSelectionInsideSpecialBlock(editor: Editor) {
+  for (let depth = editor.state.selection.$from.depth; depth > 0; depth -= 1) {
+    const name = editor.state.selection.$from.node(depth).type.name;
+    if (name === "callout" || name === "toggle") return true;
+  }
+  return false;
+}
 
 function ToolbarButton({
   active,
@@ -602,6 +672,7 @@ function EditorToolbar({
 
       <div className="toolbar-group">
         <ToolbarButton
+          disabled={isSelectionInsideSpecialBlock(editor)}
           onClick={() => editor.chain().focus().setCallout().run()}
           title="高亮块"
         >
@@ -609,6 +680,7 @@ function EditorToolbar({
           <span style={{ fontSize: 11 }}>提示</span>
         </ToolbarButton>
         <ToolbarButton
+          disabled={isSelectionInsideSpecialBlock(editor)}
           onClick={() => editor.chain().focus().setToggle().run()}
           title="折叠块"
         >
@@ -916,9 +988,11 @@ function nodeToMarkdown(node: ChildNode): string {
 }
 
 async function streamAssistantReply({
+  documentContext,
   messages,
   onDelta,
 }: {
+  documentContext: string;
   messages: AssistantMessage[];
   onDelta: (delta: string) => void;
 }) {
@@ -942,6 +1016,7 @@ async function streamAssistantReply({
         base_url: settings.baseUrl,
         model: settings.defaultModel,
         use_system_model: settings.useSystemModel || undefined,
+        document_context: documentContext,
         messages: [
           ...messages.map((message) => ({
             role: message.role,
@@ -1023,6 +1098,9 @@ export function EditorPage({
   const [saveToggle, setSaveToggle] = useState(false);
   const [, setSelectionVersion] = useState(0);
   const [pendingMarkdown, setPendingMarkdown] = useState<{ content: string; features: string[] } | null>(null);
+  const [assistantConversations, setAssistantConversations] = useState<AssistantConversation[]>([]);
+  const [activeAssistantConversationId, setActiveAssistantConversationId] = useState("");
+  const [assistantHistoryOpen, setAssistantHistoryOpen] = useState(false);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([]);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantStreaming, setAssistantStreaming] = useState(false);
@@ -1057,6 +1135,7 @@ export function EditorPage({
       Underline,
       CalloutBlock,
       ToggleBlock,
+      NoNestedSpecialBlocks,
       StructureFold,
     ],
     content: initialContent,
@@ -1134,27 +1213,77 @@ export function EditorPage({
 
   useEffect(() => {
     if (!documentId) {
+      setAssistantConversations([]);
+      setActiveAssistantConversationId("");
       setAssistantMessages([]);
       return;
     }
     let cancelled = false;
+    const storedConversations = parseAssistantConversations(userStorage.getItem(assistantHistoryStorageKey(documentId)));
+    if (storedConversations.length) {
+      const activeConversation = storedConversations[0];
+      setAssistantConversations(storedConversations);
+      setActiveAssistantConversationId(activeConversation.id);
+      setAssistantMessages(activeConversation.messages);
+      return;
+    }
+
     void getDocumentAssistantHistory(documentId).then((history) => {
       if (cancelled) return;
-      setAssistantMessages(
-        history.messages.map((message) => ({
+      const messages = history.messages.map((message) => ({
           id: randomId(),
-          role: message.role === "assistant" ? "assistant" : "user",
+          role: (message.role === "assistant" ? "assistant" : "user") as AssistantMessage["role"],
           content: message.content,
-        })),
-      );
-    }).catch(() => setAssistantMessages([]));
+      }));
+      const conversation = createAssistantConversation(messages);
+      setAssistantConversations([conversation]);
+      setActiveAssistantConversationId(conversation.id);
+      setAssistantMessages(messages);
+    }).catch(() => {
+      const conversation = createAssistantConversation();
+      setAssistantConversations([conversation]);
+      setActiveAssistantConversationId(conversation.id);
+      setAssistantMessages([]);
+    });
     return () => {
       cancelled = true;
     };
   }, [documentId]);
 
   useEffect(() => {
-    if (!documentId) return;
+    if (!documentId || !activeAssistantConversationId) return;
+    const now = new Date().toISOString();
+    setAssistantConversations((current) => {
+      const updated = current.some((conversation) => conversation.id === activeAssistantConversationId)
+        ? current.map((conversation) =>
+            conversation.id === activeAssistantConversationId
+              ? {
+                  ...conversation,
+                  title: assistantConversationTitle(assistantMessages),
+                  messages: assistantMessages,
+                  updatedAt: now,
+                }
+              : conversation,
+          )
+        : [
+            {
+              ...createAssistantConversation(assistantMessages),
+              id: activeAssistantConversationId,
+              updatedAt: now,
+            },
+            ...current,
+          ];
+      return updated.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    });
+  }, [assistantMessages, activeAssistantConversationId, documentId]);
+
+  useEffect(() => {
+    if (!documentId || !assistantConversations.length) return;
+    userStorage.setItem(assistantHistoryStorageKey(documentId), JSON.stringify(assistantConversations));
+  }, [assistantConversations, documentId]);
+
+  useEffect(() => {
+    if (!documentId || !activeAssistantConversationId) return;
     const timer = window.setTimeout(() => {
       void saveDocumentAssistantHistory(
         documentId,
@@ -1164,7 +1293,7 @@ export function EditorPage({
       );
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [assistantMessages, documentId]);
+  }, [assistantMessages, activeAssistantConversationId, documentId]);
 
   useEffect(() => {
     userStorage.setItem("editorAssistantWidth", String(assistantWidth));
@@ -1262,6 +1391,42 @@ export function EditorPage({
     setPendingMarkdown(null);
   };
 
+  const buildAssistantDocumentContext = () => {
+    if (!editor) return documentTitle.trim();
+    const body = htmlToMarkdown(editor.getHTML()).trim();
+    const title = documentTitle.trim();
+    const context = title ? `# ${title}${body ? `\n\n${body}` : ""}` : body;
+    return context.slice(0, MAX_ASSISTANT_CONTEXT_LENGTH);
+  };
+
+  const startNewAssistantConversation = () => {
+    if (assistantStreaming) return;
+    const conversation = createAssistantConversation();
+    setAssistantConversations((current) => [conversation, ...current]);
+    setActiveAssistantConversationId(conversation.id);
+    setAssistantMessages([]);
+    setAssistantHistoryOpen(false);
+  };
+
+  const selectAssistantConversation = (conversation: AssistantConversation) => {
+    if (assistantStreaming || conversation.id === activeAssistantConversationId) return;
+    setActiveAssistantConversationId(conversation.id);
+    setAssistantMessages(conversation.messages);
+    setAssistantHistoryOpen(false);
+  };
+
+  const deleteAssistantConversation = (conversationId: string) => {
+    if (assistantStreaming) return;
+    const next = assistantConversations.filter((conversation) => conversation.id !== conversationId);
+    if (conversationId === activeAssistantConversationId) {
+      const fallback = next[0] || createAssistantConversation();
+      if (!next.length) next.push(fallback);
+      setActiveAssistantConversationId(fallback.id);
+      setAssistantMessages(fallback.messages);
+    }
+    setAssistantConversations(next);
+  };
+
   const sendAssistantMessage = async () => {
     const content = assistantInput.trim();
     if (!content || assistantStreaming) return;
@@ -1284,6 +1449,7 @@ export function EditorPage({
 
     try {
       await streamAssistantReply({
+        documentContext: buildAssistantDocumentContext(),
         messages: nextMessages.filter((message) => message.role === "user" || message.content.trim()),
         onDelta: (delta) => {
           setAssistantMessages((current) =>
@@ -1376,7 +1542,56 @@ export function EditorPage({
               <Sparkles size={20} />
               <h2>文枢助手</h2>
             </div>
+            <div className="assistant-title-actions">
+              <button
+                className="assistant-icon-btn"
+                disabled={assistantStreaming}
+                onClick={startNewAssistantConversation}
+                title="新建对话"
+                type="button"
+              >
+                <Plus size={16} />
+              </button>
+              <button
+                className={`assistant-icon-btn ${assistantHistoryOpen ? "active" : ""}`}
+                onClick={() => setAssistantHistoryOpen((open) => !open)}
+                title="历史对话"
+                type="button"
+              >
+                <History size={16} />
+              </button>
+            </div>
           </div>
+
+          {assistantHistoryOpen && (
+            <div className="assistant-history-list">
+              {assistantConversations.map((conversation) => (
+                <button
+                  className={`assistant-history-item ${conversation.id === activeAssistantConversationId ? "active" : ""}`}
+                  key={conversation.id}
+                  onClick={() => selectAssistantConversation(conversation)}
+                  type="button"
+                >
+                  <span className="assistant-history-title">{conversation.title}</span>
+                  <span className="assistant-history-meta">
+                    {conversation.messages.filter((message) => message.role === "user").length} 条消息
+                  </span>
+                  <span
+                    className="assistant-history-delete"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      deleteAssistantConversation(conversation.id);
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    title="删除"
+                  >
+                    <Trash2 size={14} />
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="assistant-thread">
             {assistantMessages.length === 0 ? (

@@ -16,9 +16,14 @@ def error_event(message: str) -> bytes:
 async def stream_assistant_reply(
     messages: list[AssistantMessage],
     model_config: RuntimeModelConfig,
+    document_context: str = "",
 ) -> AsyncGenerator[bytes, None]:
+    context_prompt = (
+        "\n\n当前文档原文如下。回答用户问题时优先参考它；如果用户要求改写、续写、提炼或解释，请基于这份原文处理。\n"
+        f"{document_context.strip()}"
+    ) if document_context.strip() else ""
     provider_messages = [
-        {"role": "system", "content": ASSISTANT_SYSTEM_PROMPT},
+        {"role": "system", "content": f"{ASSISTANT_SYSTEM_PROMPT}{context_prompt}"},
         *[message.model_dump() for message in messages],
     ]
 

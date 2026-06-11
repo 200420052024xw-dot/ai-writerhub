@@ -33,7 +33,7 @@ import {
   type StoredDocumentSummary,
 } from "../services/api";
 import { userStorage } from "../services/userStorage";
-import { loadModelSettings } from "../services/modelSettings";
+import { loadModelSettings, resolveVisionRuntimeConfig } from "../services/modelSettings";
 
 type HomePageProps = {
   onOpenDocument: (document: StoredDocumentDetail) => void;
@@ -198,8 +198,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
 
   const retryRecognize = async (documentId: string) => {
     const settings = loadModelSettings();
-    const ready = settings.useSystemModel ? (settings.baseUrl.trim() && settings.defaultModel.trim()) : (settings.apiKey.trim() && settings.baseUrl.trim() && settings.defaultModel.trim());
-    if (!ready) {
+    const visionConfig = resolveVisionRuntimeConfig(settings);
+    if (!visionConfig.ready) {
       showMessage("请先在设置页配置支持图片输入的模型");
       return;
     }
@@ -214,8 +214,10 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
           documentId,
           api_key: settings.apiKey,
           base_url: settings.baseUrl,
-          model: settings.defaultModel,
-          vision_model: settings.visionModel || undefined,
+          model: visionConfig.model,
+          vision_api_key: visionConfig.visionApiKey,
+          vision_base_url: visionConfig.visionBaseUrl,
+          vision_model: visionConfig.visionModel || undefined,
           use_system_model: settings.useSystemModel || undefined,
         }),
         new Promise<never>((_, reject) =>
@@ -269,8 +271,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
     if (selectedFiles.length === 0) return;
 
     const settings = loadModelSettings();
-    const ready = settings.useSystemModel ? (settings.baseUrl.trim() && settings.defaultModel.trim()) : (settings.apiKey.trim() && settings.baseUrl.trim() && settings.defaultModel.trim());
-    if (!ready) {
+    const visionConfig = resolveVisionRuntimeConfig(settings);
+    if (!visionConfig.ready) {
       showMessage("请先在设置页配置支持图片输入的模型");
       return;
     }
@@ -313,8 +315,10 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
             documentId: docId,
             api_key: settings.apiKey,
             base_url: settings.baseUrl,
-            model: settings.defaultModel,
-            vision_model: settings.visionModel || undefined,
+            model: visionConfig.model,
+            vision_api_key: visionConfig.visionApiKey,
+            vision_base_url: visionConfig.visionBaseUrl,
+            vision_model: visionConfig.visionModel || undefined,
             use_system_model: settings.useSystemModel || undefined,
           }),
           new Promise<never>((_, reject) =>

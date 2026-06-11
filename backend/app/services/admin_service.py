@@ -88,6 +88,10 @@ _SYSTEM_SETTING_KEYS = {
     "system_model_api_key",
     "system_model_base_url",
     "system_model_name",
+    "system_model_vision_provider",
+    "system_model_vision_use_main_config",
+    "system_model_vision_api_key",
+    "system_model_vision_base_url",
     "system_model_vision_model",
     "system_rag_embedding_source",
     "system_rag_api_key",
@@ -137,6 +141,9 @@ def get_system_model_config() -> SystemModelConfigResponse:
         api_key="",  # 系统 key 不暴露给前端
         base_url=data.get("system_model_base_url", ""),
         model=data.get("system_model_name", ""),
+        vision_provider=data.get("system_model_vision_provider", ""),
+        vision_use_main_config=data.get("system_model_vision_use_main_config", "1") != "0",
+        vision_base_url=data.get("system_model_vision_base_url", ""),
         vision_model=data.get("system_model_vision_model", ""),
         rag_embedding_source=data.get("system_rag_embedding_source", "local"),
         rag_api_key="",  # 系统 key 不暴露给前端

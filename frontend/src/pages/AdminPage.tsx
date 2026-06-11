@@ -27,6 +27,7 @@ import {
 } from "../services/api";
 import {
   MODEL_PROVIDER_PRESETS,
+  VISION_MODEL_PROVIDER_PRESETS,
   type ModelProviderId,
 } from "../services/modelSettings";
 
@@ -218,6 +219,11 @@ function SystemModelSettings() {
   const [chatTesting, setChatTesting] = useState(false);
   const [chatTestState, setChatTestState] = useState<"idle" | "ok" | "failed">("idle");
   const [chatTestMessage, setChatTestMessage] = useState("");
+  const [visionProvider, setVisionProvider] = useState<ModelProviderId>("qwen");
+  const [visionSaved, setVisionSaved] = useState(false);
+  const [visionTesting, setVisionTesting] = useState(false);
+  const [visionTestState, setVisionTestState] = useState<"idle" | "ok" | "failed">("idle");
+  const [visionTestMessage, setVisionTestMessage] = useState("");
   const [ragSaved, setRagSaved] = useState(false);
   const [ragTesting, setRagTesting] = useState(false);
   const [ragTestState, setRagTestState] = useState<"idle" | "ok" | "failed">("idle");
@@ -231,6 +237,9 @@ function SystemModelSettings() {
         const baseUrl = data.settings.system_model_base_url || "";
         const matched = MODEL_PROVIDER_PRESETS.find((p) => p.baseUrl === baseUrl);
         setChatProvider(matched ? matched.id : "custom");
+        const visionBaseUrl = data.settings.system_model_vision_base_url || "";
+        const visionMatched = VISION_MODEL_PROVIDER_PRESETS.find((p) => p.baseUrl === visionBaseUrl);
+        setVisionProvider(visionMatched ? visionMatched.id : "custom");
       } catch { setSettings({}); } finally { setLoading(false); }
     };
     void load();
@@ -245,22 +254,68 @@ function SystemModelSettings() {
     setChatProvider(id);
     set("system_model_base_url", preset.baseUrl);
     set("system_model_name", preset.defaultModel);
-    set("system_model_vision_model", preset.visionModel);
     set("system_model_provider", id);
+  };
+
+  const selectVisionProvider = (id: ModelProviderId) => {
+    const preset = VISION_MODEL_PROVIDER_PRESETS.find((p) => p.id === id);
+    if (!preset) return;
+    setVisionProvider(id);
+    set("system_model_vision_provider", id);
+    set("system_model_vision_base_url", preset.baseUrl);
+    set("system_model_vision_model", preset.visionModel);
   };
 
   const handleSaveChat = async () => {
     try {
+      const useMain = (get("system_model_vision_use_main_config") || "1") !== "0";
       await adminUpdateSystemSettings({
         system_model_provider: get("system_model_provider"),
         system_model_api_key: get("system_model_api_key"),
         system_model_base_url: get("system_model_base_url"),
         system_model_name: get("system_model_name"),
-        system_model_vision_model: get("system_model_vision_model"),
+        ...(useMain
+          ? {
+              system_model_vision_use_main_config: "1",
+              system_model_vision_model: get("system_model_vision_model"),
+            }
+          : {}),
       });
       setChatSaved(true);
       window.setTimeout(() => setChatSaved(false), 1800);
     } catch { /* ignore */ }
+  };
+
+  const handleSaveVision = async () => {
+    try {
+      await adminUpdateSystemSettings({
+        system_model_vision_provider: get("system_model_vision_provider"),
+        system_model_vision_use_main_config: get("system_model_vision_use_main_config") || "0",
+        system_model_vision_api_key: get("system_model_vision_api_key"),
+        system_model_vision_base_url: get("system_model_vision_base_url"),
+        system_model_vision_model: get("system_model_vision_model"),
+      });
+      setVisionSaved(true);
+      window.setTimeout(() => setVisionSaved(false), 1800);
+    } catch { /* ignore */ }
+  };
+
+  const handleTestVision = async () => {
+    const apiKey = get("system_model_api_key");
+    const useMain = (get("system_model_vision_use_main_config") || "1") !== "0";
+    const visionApiKey = useMain ? apiKey : get("system_model_vision_api_key");
+    const baseUrl = useMain ? get("system_model_base_url") : get("system_model_vision_base_url");
+    const model = get("system_model_vision_model") || get("system_model_name");
+    if (!visionApiKey.trim() || !baseUrl.trim() || !model.trim()) {
+      setVisionTestState("failed"); setVisionTestMessage("请填写 API Key、Base URL 和视觉模型名称"); return;
+    }
+    setVisionTesting(true); setVisionTestState("idle"); setVisionTestMessage("");
+    try {
+      await adminTestSystemModel({ api_key: visionApiKey, base_url: baseUrl, model });
+      setVisionTestState("ok"); setVisionTestMessage("连接正常");
+    } catch (e) {
+      setVisionTestState("failed"); setVisionTestMessage(e instanceof Error ? e.message : "连接失败");
+    } finally { setVisionTesting(false); }
   };
 
   const handleTestChat = async () => {
@@ -319,6 +374,8 @@ function SystemModelSettings() {
     return <div className="admin-empty"><Loader2 size={24} className="spin" /><span>加载中...</span></div>;
   }
 
+  const visionUseMainConfig = (get("system_model_vision_use_main_config") || "1") !== "0";
+
   return (
     <div className="admin-model-scroll">
       {/* 聊天模型 */}
@@ -358,10 +415,6 @@ function SystemModelSettings() {
             <span>默认模型</span>
             <input onChange={(e) => set("system_model_name", e.target.value)} value={get("system_model_name")} />
           </label>
-          <label>
-            <span>视觉模型（文档解析）</span>
-            <input onChange={(e) => set("system_model_vision_model", e.target.value)} placeholder="留空则使用默认模型" value={get("system_model_vision_model")} />
-          </label>
         </div>
 
         <div className="settings-actions">
@@ -375,6 +428,82 @@ function SystemModelSettings() {
           </button>
         </div>
         {chatTestMessage && <div className={`settings-test-message ${chatTestState}`}>{chatTestMessage}</div>}
+
+        <div className="settings-subsection">
+          <div className="settings-subsection-head">
+            <div>
+              <span>视觉模型</span>
+              <h3>用于文档解析和图片内容识别</h3>
+            </div>
+            <button
+              className={`settings-chip-toggle ${visionUseMainConfig ? "active" : ""}`}
+              onClick={() => set("system_model_vision_use_main_config", visionUseMainConfig ? "0" : "1")}
+              type="button"
+            >
+              共用上方大模型 Key/地址
+            </button>
+          </div>
+
+          {!visionUseMainConfig && (
+            <div className="provider-grid compact">
+              {VISION_MODEL_PROVIDER_PRESETS.map((preset) => (
+                <button
+                  className={`provider-card ${visionProvider === preset.id ? "active" : ""}`}
+                  key={preset.id}
+                  onClick={() => selectVisionProvider(preset.id)}
+                  type="button"
+                >
+                  <strong>{preset.name}</strong>
+                  <span>{preset.note}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="settings-form">
+            {!visionUseMainConfig && (
+              <>
+                <label>
+                  <span><KeyRound size={17} />视觉 API Key</span>
+                  <div className="secret-input">
+                    <input autoComplete="off" onChange={(e) => set("system_model_vision_api_key", e.target.value)} placeholder="sk-..." type={showKey ? "text" : "password"} value={get("system_model_vision_api_key")} />
+                    <button onClick={() => setShowKey((v) => !v)} type="button" aria-label="切换视觉密钥显示">{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button>
+                  </div>
+                </label>
+                <label>
+                  <span><ServerCog size={17} />视觉 Base URL</span>
+                  <input
+                    onChange={(e) => {
+                      setVisionProvider("custom");
+                      set("system_model_vision_base_url", e.target.value);
+                    }}
+                    value={get("system_model_vision_base_url")}
+                  />
+                </label>
+              </>
+            )}
+            <label>
+              <span>视觉模型名称</span>
+              <input onChange={(e) => set("system_model_vision_model", e.target.value)} placeholder="只填写视觉模型名称" value={get("system_model_vision_model")} />
+            </label>
+          </div>
+
+          {!visionUseMainConfig && (
+            <>
+              <div className="settings-actions">
+                {visionSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}
+                <button className={`settings-test-action ${visionTestState}`} disabled={visionTesting} onClick={() => void handleTestVision()} type="button">
+                  <PlugZap size={18} />
+                  {visionTesting ? "测试中..." : visionTestState === "ok" ? "连接正常" : visionTestState === "failed" ? "连接失败" : "测试视觉模型"}
+                </button>
+                <button className="settings-save-action" onClick={() => void handleSaveVision()} type="button">
+                  <Save size={18} />保存视觉模型设置
+                </button>
+              </div>
+              {visionTestMessage && <div className={`settings-test-message ${visionTestState}`}>{visionTestMessage}</div>}
+            </>
+          )}
+        </div>
       </section>
 
       {/* 向量模型 */}

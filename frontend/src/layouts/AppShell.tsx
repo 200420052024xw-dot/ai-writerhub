@@ -325,6 +325,9 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
         apiKey: "", // 系统 key 不存储到前端
         baseUrl: config.base_url,
         defaultModel: config.model,
+        visionProviderId: (config.vision_provider as typeof modelSettings.providerId) || "qwen",
+        visionUseMainConfig: config.vision_use_main_config,
+        visionBaseUrl: config.vision_base_url,
         visionModel: config.vision_model,
       });
       setModelSettings(loadModelSettings());

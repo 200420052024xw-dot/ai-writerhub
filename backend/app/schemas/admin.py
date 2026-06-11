@@ -42,6 +42,9 @@ class SystemModelConfigResponse(BaseModel):
     api_key: str = ""
     base_url: str = ""
     model: str = ""
+    vision_provider: str = ""
+    vision_use_main_config: bool = True
+    vision_base_url: str = ""
     vision_model: str = ""
     rag_embedding_source: str = "local"
     rag_api_key: str = ""

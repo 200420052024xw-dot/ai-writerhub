@@ -13,7 +13,7 @@ export const CalloutBlock = Node.create({
 
   group: "block",
 
-  content: "block+",
+  content: "(paragraph|heading|bulletList|orderedList|blockquote|codeBlock|horizontalRule)+",
 
   defining: true,
 
@@ -53,7 +53,11 @@ export const CalloutBlock = Node.create({
     return {
       setCallout:
         () =>
-        ({ commands }) => {
+        ({ commands, state }) => {
+          for (let depth = state.selection.$from.depth; depth > 0; depth -= 1) {
+            const name = state.selection.$from.node(depth).type.name;
+            if (name === "callout" || name === "toggle") return false;
+          }
           return commands.wrapIn(this.name);
         },
     };

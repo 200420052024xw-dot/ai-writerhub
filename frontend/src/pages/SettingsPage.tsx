@@ -6,6 +6,7 @@ import { loadKnowledgeSaveSettings, saveKnowledgeSaveSettings, type KnowledgeSav
 import {
   loadModelSettings,
   MODEL_PROVIDER_PRESETS,
+  VISION_MODEL_PROVIDER_PRESETS,
   saveModelSettings,
   type ModelProviderId,
   type ModelSettings,
@@ -25,6 +26,10 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
   const [testing, setTesting] = useState(false);
   const [testState, setTestState] = useState<"idle" | "ok" | "failed">("idle");
   const [testMessage, setTestMessage] = useState("");
+  const [visionSaved, setVisionSaved] = useState(false);
+  const [visionTesting, setVisionTesting] = useState(false);
+  const [visionTestState, setVisionTestState] = useState<"idle" | "ok" | "failed">("idle");
+  const [visionTestMessage, setVisionTestMessage] = useState("");
   const [ragTesting, setRagTesting] = useState(false);
   const [ragTestState, setRagTestState] = useState<"idle" | "ok" | "failed">("idle");
   const [ragTestMessage, setRagTestMessage] = useState("");
@@ -38,9 +43,20 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const selectProvider = (providerId: ModelProviderId) => {
+    const preset = VISION_MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
+    if (!preset) return;
+    setSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, defaultModel: preset.defaultModel }));
+  };
+
+  const selectVisionProvider = (providerId: ModelProviderId) => {
     const preset = MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
     if (!preset) return;
-    setSettings((current) => ({ ...current, providerId, baseUrl: preset.baseUrl, defaultModel: preset.defaultModel, visionModel: preset.visionModel }));
+    setSettings((current) => ({
+      ...current,
+      visionProviderId: providerId,
+      visionBaseUrl: preset.baseUrl,
+      visionModel: preset.visionModel,
+    }));
   };
 
   const selectRagProvider = (providerId: RagProviderId) => {
@@ -53,7 +69,8 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
     setSettings((current) => ({
       ...current,
       [field]: value,
-      providerId: field === "baseUrl" || field === "defaultModel" || field === "visionModel" ? "custom" : current.providerId,
+      providerId: field === "baseUrl" ? "custom" : current.providerId,
+      visionProviderId: field === "visionBaseUrl" ? "custom" : current.visionProviderId,
     }));
   };
 
@@ -72,9 +89,37 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
   };
 
   const saveAi = () => {
-    saveModelSettings(settings);
+    const saved = loadModelSettings();
+    saveModelSettings({
+      ...saved,
+      providerId: settings.providerId,
+      apiKey: settings.apiKey,
+      baseUrl: settings.baseUrl,
+      defaultModel: settings.defaultModel,
+      useSystemModel: settings.useSystemModel,
+      ...(settings.visionUseMainConfig
+        ? {
+            visionUseMainConfig: true,
+            visionModel: settings.visionModel,
+          }
+        : {}),
+    });
     setAiSaved(true);
     window.setTimeout(() => setAiSaved(false), 1800);
+  };
+
+  const saveVision = () => {
+    const saved = loadModelSettings();
+    saveModelSettings({
+      ...saved,
+      visionProviderId: settings.visionProviderId,
+      visionUseMainConfig: settings.visionUseMainConfig,
+      visionApiKey: settings.visionApiKey,
+      visionBaseUrl: settings.visionBaseUrl,
+      visionModel: settings.visionModel,
+    });
+    setVisionSaved(true);
+    window.setTimeout(() => setVisionSaved(false), 1800);
   };
 
   const handleToggleSystemModel = async () => {
@@ -95,6 +140,9 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
         apiKey: "", // 系统 key 不存到前端
         baseUrl: config.base_url,
         defaultModel: config.model,
+        visionProviderId: (config.vision_provider as ModelProviderId) || "qwen",
+        visionUseMainConfig: config.vision_use_main_config,
+        visionBaseUrl: config.vision_base_url,
         visionModel: config.vision_model,
       }));
       // 同步 RAG 设置
@@ -139,6 +187,29 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
       setTestMessage(error instanceof Error ? error.message : "连接失败");
     } finally {
       setTesting(false);
+    }
+  };
+
+  const testVisionConnection = async () => {
+    if (settings.useSystemModel || settings.visionUseMainConfig) return;
+    const model = settings.visionModel.trim() || settings.defaultModel.trim();
+    if (!settings.visionApiKey.trim() || !settings.visionBaseUrl.trim() || !model) {
+      setVisionTestState("failed");
+      setVisionTestMessage("请填写视觉 API Key、Base URL 和视觉模型名称");
+      return;
+    }
+    setVisionTesting(true);
+    setVisionTestState("idle");
+    setVisionTestMessage("");
+    try {
+      await testFormatModel({ api_key: settings.visionApiKey, base_url: settings.visionBaseUrl, model });
+      setVisionTestState("ok");
+      setVisionTestMessage("连接正常");
+    } catch (error) {
+      setVisionTestState("failed");
+      setVisionTestMessage(error instanceof Error ? error.message : "连接失败");
+    } finally {
+      setVisionTesting(false);
     }
   };
 
@@ -290,15 +361,11 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
                     <span>默认模型</span>
                     <input disabled={settings.useSystemModel} onChange={(event) => updateField("defaultModel", event.target.value)} value={settings.defaultModel} />
                   </label>
-                  <label>
-                    <span>视觉模型（文档解析）</span>
-                    <input disabled={settings.useSystemModel} onChange={(event) => updateField("visionModel", event.target.value)} placeholder="留空则使用默认模型" value={settings.visionModel} />
-                  </label>
                 </div>
 
                 <div className="settings-actions">
                   {aiSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}
-                  <button className={`settings-test-action ${testState}`} disabled={testing} onClick={() => void testConnection()} type="button">
+                  <button className={`settings-test-action ${testState}`} disabled={testing || settings.useSystemModel} onClick={() => void testConnection()} type="button">
                     <PlugZap size={18} />
                     {testing ? "测试中..." : testState === "ok" ? "连接正常" : testState === "failed" ? "连接失败" : "测试连通性"}
                   </button>
@@ -308,6 +375,91 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
                   </button>
                 </div>
                 {testMessage && <div className={`settings-test-message ${testState}`}>{testMessage}</div>}
+
+                <div className="settings-subsection">
+                  <div className="settings-subsection-head">
+                    <div>
+                      <span>视觉模型</span>
+                      <h3>用于文档解析和图片内容识别</h3>
+                    </div>
+                    <button
+                      className={`settings-chip-toggle ${settings.visionUseMainConfig ? "active" : ""}`}
+                      disabled={settings.useSystemModel}
+                      onClick={() => setSettings((current) => ({ ...current, visionUseMainConfig: !current.visionUseMainConfig }))}
+                      type="button"
+                    >
+                      共用上方大模型 Key/地址
+                    </button>
+                  </div>
+
+                  {!settings.visionUseMainConfig && !settings.useSystemModel && (
+                    <div className="provider-grid compact">
+                      {VISION_MODEL_PROVIDER_PRESETS.map((preset) => (
+                        <button
+                          className={`provider-card ${settings.visionProviderId === preset.id ? "active" : ""}`}
+                          key={preset.id}
+                          onClick={() => selectVisionProvider(preset.id)}
+                          type="button"
+                        >
+                          <strong>{preset.name}</strong>
+                          <span>{preset.note}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="settings-form">
+                    {!settings.visionUseMainConfig && !settings.useSystemModel && (
+                      <>
+                        <label>
+                          <span><KeyRound size={17} />视觉 API Key</span>
+                          <div className="secret-input">
+                            <input
+                              autoComplete="off"
+                              onChange={(event) => updateField("visionApiKey", event.target.value)}
+                              placeholder="sk-..."
+                              type={showKey ? "text" : "password"}
+                              value={settings.visionApiKey}
+                            />
+                            <button onClick={() => setShowKey((value) => !value)} type="button" aria-label="切换视觉密钥显示">
+                              {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
+                            </button>
+                          </div>
+                        </label>
+                        <label>
+                          <span><ServerCog size={17} />视觉 Base URL</span>
+                          <input onChange={(event) => updateField("visionBaseUrl", event.target.value)} value={settings.visionBaseUrl} />
+                        </label>
+                      </>
+                    )}
+                    <label>
+                      <span>视觉模型名称</span>
+                      <input
+                        disabled={settings.useSystemModel}
+                        onChange={(event) => updateField("visionModel", event.target.value)}
+                        placeholder={settings.visionUseMainConfig ? "只填写视觉模型名称" : "请输入支持图片输入的模型名"}
+                        value={settings.visionModel}
+                      />
+                    </label>
+                  </div>
+
+                  {!settings.visionUseMainConfig && !settings.useSystemModel && (
+                    <>
+                      <div className="settings-actions">
+                        {visionSaved && <div className="save-state"><CheckCircle2 size={18} />已保存</div>}
+                        <button className={`settings-test-action ${visionTestState}`} disabled={visionTesting} onClick={() => void testVisionConnection()} type="button">
+                          <PlugZap size={18} />
+                          {visionTesting ? "测试中..." : visionTestState === "ok" ? "连接正常" : visionTestState === "failed" ? "连接失败" : "测试视觉模型"}
+                        </button>
+                        <button className="settings-save-action" onClick={saveVision} type="button">
+                          <Save size={18} />
+                          保存视觉模型设置
+                        </button>
+                      </div>
+                      {visionTestMessage && <div className={`settings-test-message ${visionTestState}`}>{visionTestMessage}</div>}
+                    </>
+                  )}
+                </div>
               </>
             )}
           </section>

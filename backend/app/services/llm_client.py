@@ -9,18 +9,25 @@ class RuntimeModelConfig(BaseModel):
     api_key: str = Field(default="", max_length=2048)
     base_url: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    vision_api_key: str | None = None
+    vision_base_url: str | None = None
     vision_model: str | None = None
     use_system_model: bool = False
 
 
-def _get_system_api_key() -> str:
-    """从 system_settings 表读取系统 API Key"""
+def _get_system_setting(key: str) -> str:
     from app.core.database import _ConnectionCtx
     with _ConnectionCtx() as conn:
         row = conn.execute(
-            "SELECT setting_value FROM system_settings WHERE setting_key = 'system_model_api_key'"
+            "SELECT setting_value FROM system_settings WHERE setting_key = %s",
+            (key,),
         ).fetchone()
     return row["setting_value"] if row else ""
+
+
+def _get_system_api_key() -> str:
+    """从 system_settings 表读取系统 API Key"""
+    return _get_system_setting("system_model_api_key")
 
 
 def ensure_runtime_model_config(model_config: RuntimeModelConfig | None) -> RuntimeModelConfig:
@@ -159,10 +166,23 @@ async def call_chat_messages(messages: list[dict[str, str]], model_config: Runti
 
 
 async def call_vision_model(image_url: str, prompt: str, model_config: RuntimeModelConfig) -> str:
-    model_config = ensure_runtime_model_config(model_config)
-    url = chat_completions_url(model_config.base_url)
+    vision_api_key = (model_config.vision_api_key or model_config.api_key).strip()
+    if model_config.use_system_model and model_config.vision_base_url and not vision_api_key:
+        vision_api_key = _get_system_setting("system_model_vision_api_key").strip()
+    if model_config.use_system_model and not vision_api_key:
+        vision_api_key = _get_system_api_key()
+    vision_config = model_config.model_copy(
+        update={
+            "api_key": vision_api_key,
+            "base_url": normalize_base_url(model_config.vision_base_url or model_config.base_url),
+            "model": (model_config.vision_model or model_config.model).strip(),
+        }
+    )
+    if not vision_config.api_key or not vision_config.base_url or not vision_config.model:
+        raise HTTPException(status_code=400, detail="请先在设置页配置视觉模型 API Key、Base URL 和模型名称")
+    url = chat_completions_url(vision_config.base_url)
     payload = {
-        "model": model_config.vision_model or model_config.model,
+        "model": vision_config.model,
         "messages": [
             {
                 "role": "user",
@@ -174,7 +194,7 @@ async def call_vision_model(image_url: str, prompt: str, model_config: RuntimeMo
         ],
         "temperature": 0.1,
     }
-    headers = model_auth_headers(model_config)
+    headers = model_auth_headers(vision_config)
 
     try:
         async with httpx.AsyncClient(timeout=None) as client:

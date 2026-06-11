@@ -116,12 +116,22 @@ async def upload_document(
     api_key: str = Form(default=""),
     base_url: str = Form(...),
     model: str = Form(...),
+    vision_api_key: str | None = Form(None),
+    vision_base_url: str | None = Form(None),
     vision_model: str | None = Form(None),
     use_system_model: bool = Form(default=False),
 ) -> DocumentDetail:
     return await upload_and_parse_document(
         file,
-        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model, use_system_model=use_system_model),
+        RuntimeModelConfig(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            vision_api_key=vision_api_key,
+            vision_base_url=vision_base_url,
+            vision_model=vision_model,
+            use_system_model=use_system_model,
+        ),
     )
 
 
@@ -138,12 +148,22 @@ async def recognize(
     api_key: str = Form(default=""),
     base_url: str = Form(...),
     model: str = Form(...),
+    vision_api_key: str | None = Form(None),
+    vision_base_url: str | None = Form(None),
     vision_model: str | None = Form(None),
     use_system_model: bool = Form(default=False),
 ) -> DocumentDetail:
     return await recognize_document(
         document_id,
-        RuntimeModelConfig(api_key=api_key, base_url=base_url, model=model, vision_model=vision_model, use_system_model=use_system_model),
+        RuntimeModelConfig(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            vision_api_key=vision_api_key,
+            vision_base_url=vision_base_url,
+            vision_model=vision_model,
+            use_system_model=use_system_model,
+        ),
     )
 
 

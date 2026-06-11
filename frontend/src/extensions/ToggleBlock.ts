@@ -15,7 +15,7 @@ export const ToggleBlock = Node.create({
 
   group: "block",
 
-  content: "block+",
+  content: "(paragraph|heading|bulletList|orderedList|blockquote|codeBlock|horizontalRule)+",
 
   defining: true,
 
@@ -60,7 +60,11 @@ export const ToggleBlock = Node.create({
     return {
       setToggle:
         () =>
-        ({ commands }) => {
+        ({ commands, state }) => {
+          for (let depth = state.selection.$from.depth; depth > 0; depth -= 1) {
+            const name = state.selection.$from.node(depth).type.name;
+            if (name === "callout" || name === "toggle") return false;
+          }
           return commands.wrapIn(this.name, { open: true, title: "展开查看详情" });
         },
     };

@@ -14,6 +14,10 @@ export type ModelSettings = {
   apiKey: string;
   baseUrl: string;
   defaultModel: string;
+  visionProviderId: ModelProviderId;
+  visionUseMainConfig: boolean;
+  visionApiKey: string;
+  visionBaseUrl: string;
   visionModel: string;
   useSystemModel: boolean;
 };
@@ -85,6 +89,10 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
   },
 ];
 
+export const VISION_MODEL_PROVIDER_PRESETS = MODEL_PROVIDER_PRESETS.filter(
+  (preset) => preset.id !== "deepseek" && preset.id !== "zhipu",
+);
+
 const STORAGE_KEY = "modelSettings";
 
 export const DEFAULT_MODEL_SETTINGS: ModelSettings = {
@@ -92,7 +100,11 @@ export const DEFAULT_MODEL_SETTINGS: ModelSettings = {
   apiKey: "",
   baseUrl: "https://api.deepseek.com",
   defaultModel: "deepseek-chat",
-  visionModel: "deepseek-chat",
+  visionProviderId: "qwen",
+  visionUseMainConfig: true,
+  visionApiKey: "",
+  visionBaseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  visionModel: "qwen-vl-max",
   useSystemModel: false,
 };
 
@@ -105,6 +117,26 @@ export function loadModelSettings(): ModelSettings {
   } catch {
     return DEFAULT_MODEL_SETTINGS;
   }
+}
+
+export function resolveVisionRuntimeConfig(settings: ModelSettings) {
+  const visionModel = settings.visionModel.trim() || settings.defaultModel.trim();
+  const apiKey = settings.visionUseMainConfig ? settings.apiKey : settings.visionApiKey;
+  const baseUrl = settings.visionUseMainConfig ? settings.baseUrl : settings.visionBaseUrl;
+  const ready = settings.useSystemModel
+    ? Boolean(settings.baseUrl.trim() && visionModel)
+    : Boolean(apiKey.trim() && baseUrl.trim() && visionModel);
+
+  return {
+    ready,
+    apiKey,
+    baseUrl,
+    model: settings.defaultModel.trim() || visionModel,
+    visionApiKey: settings.visionUseMainConfig ? undefined : settings.visionApiKey,
+    visionBaseUrl: settings.visionUseMainConfig ? undefined : settings.visionBaseUrl,
+    visionModel,
+    useSystemModel: settings.useSystemModel,
+  };
 }
 
 export function saveModelSettings(settings: ModelSettings) {

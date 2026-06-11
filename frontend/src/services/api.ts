@@ -800,6 +800,8 @@ export async function uploadStoredDocument(payload: {
   api_key: string;
   base_url: string;
   model: string;
+  vision_api_key?: string;
+  vision_base_url?: string;
   vision_model?: string;
   use_system_model?: boolean;
 }): Promise<StoredDocumentDetail> {
@@ -808,6 +810,8 @@ export async function uploadStoredDocument(payload: {
   formData.append("api_key", payload.api_key);
   formData.append("base_url", payload.base_url);
   formData.append("model", payload.model);
+  if (payload.vision_api_key) formData.append("vision_api_key", payload.vision_api_key);
+  if (payload.vision_base_url) formData.append("vision_base_url", payload.vision_base_url);
   if (payload.vision_model) formData.append("vision_model", payload.vision_model);
   if (payload.use_system_model) formData.append("use_system_model", "true");
 
@@ -842,6 +846,8 @@ export async function recognizeDocument(payload: {
   api_key: string;
   base_url: string;
   model: string;
+  vision_api_key?: string;
+  vision_base_url?: string;
   vision_model?: string;
   use_system_model?: boolean;
 }): Promise<StoredDocumentDetail> {
@@ -849,6 +855,8 @@ export async function recognizeDocument(payload: {
   formData.append("api_key", payload.api_key);
   formData.append("base_url", payload.base_url);
   formData.append("model", payload.model);
+  if (payload.vision_api_key) formData.append("vision_api_key", payload.vision_api_key);
+  if (payload.vision_base_url) formData.append("vision_base_url", payload.vision_base_url);
   if (payload.vision_model) formData.append("vision_model", payload.vision_model);
   if (payload.use_system_model) formData.append("use_system_model", "true");
 
@@ -880,6 +888,9 @@ export type SystemModelConfig = {
   api_key: string;
   base_url: string;
   model: string;
+  vision_provider: string;
+  vision_use_main_config: boolean;
+  vision_base_url: string;
   vision_model: string;
   rag_embedding_source: string;
   rag_api_key: string;

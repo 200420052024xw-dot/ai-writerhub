@@ -23,6 +23,7 @@ async def stream_assistant_chat(payload: AssistantChatRequest) -> StreamingRespo
                 model=payload.model,
                 use_system_model=payload.use_system_model,
             ),
+            payload.document_context,
         ),
         media_type="text/event-stream",
     )
