@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -307,7 +308,7 @@ def get_document(document_id: str, include_trashed: bool = False) -> DocumentDet
 def delete_document(document_id: str) -> None:
     """Hard delete — removes document and all related data permanently."""
     ensure_storage()
-    get_document(document_id)
+    get_document(document_id, include_trashed=True)
     from app.services.rag_service import delete_document_index
 
     delete_document_index(document_id)
@@ -320,10 +321,11 @@ def delete_document(document_id: str) -> None:
 
 
     for path in _get_original_dir().glob(f"{document_id}.*"):
-        path.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            path.unlink(missing_ok=True)
     work_dir = _get_work_dir() / document_id
     if work_dir.exists():
-        shutil.rmtree(work_dir)
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def trash_document(document_id: str) -> None:
@@ -354,7 +356,12 @@ def restore_document(document_id: str) -> None:
 def permanent_delete_document(document_id: str) -> None:
     """Permanently delete a trashed document."""
     ensure_storage()
-    doc = get_document(document_id, include_trashed=True)
+    try:
+        doc = get_document(document_id, include_trashed=True)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            return
+        raise
     if not doc.deleted_at:
         raise HTTPException(status_code=400, detail="文档不在回收站中，请使用普通删除")
     delete_document(document_id)

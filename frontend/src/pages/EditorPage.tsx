@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { Table } from "@tiptap/extension-table";
+import TableRow from "@tiptap/extension-table-row";
+import TableCell from "@tiptap/extension-table-cell";
+import TableHeader from "@tiptap/extension-table-header";
 import { TextStyle } from "@tiptap/extension-text-style";
 import { Color } from "@tiptap/extension-color";
 import { Highlight } from "@tiptap/extension-highlight";
@@ -32,7 +36,12 @@ import {
   Plus,
   Send,
   Trash2,
+  Table as TableIcon,
+  Rows3,
+  Columns3,
+  Sigma,
 } from "lucide-react";
+import "katex/dist/katex.min.css";
 import { API_BASE_URL, apiFetch, randomId } from "../services/api";
 import { userStorage } from "../services/userStorage";
 import {
@@ -48,6 +57,8 @@ import { CalloutBlock } from "../extensions/CalloutBlock";
 import { ToggleBlock } from "../extensions/ToggleBlock";
 import { StructureFold } from "../extensions/StructureFold";
 import { NoNestedSpecialBlocks } from "../extensions/NoNestedSpecialBlocks";
+import { BlockMath, InlineMath } from "../extensions/MathNodes";
+import { markdownToHtml } from "../lib/markdown";
 
 type CopyState = "idle" | "done" | "failed";
 type AssistantMessage = {
@@ -671,6 +682,26 @@ function EditorToolbar({
       <ToolbarSeparator />
 
       <div className="toolbar-group">
+        <DropdownButton label={<TableIcon size={16} />}>
+          <button onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()} type="button">插入 3x3 表格</button>
+          <button disabled={!editor.isActive("table")} onClick={() => editor.chain().focus().addRowAfter().run()} type="button"><Rows3 size={14} /> 下方插入行</button>
+          <button disabled={!editor.isActive("table")} onClick={() => editor.chain().focus().addColumnAfter().run()} type="button"><Columns3 size={14} /> 右侧插入列</button>
+          <button disabled={!editor.isActive("table")} onClick={() => editor.chain().focus().deleteRow().run()} type="button">删除行</button>
+          <button disabled={!editor.isActive("table")} onClick={() => editor.chain().focus().deleteColumn().run()} type="button">删除列</button>
+          <button disabled={!editor.isActive("table")} onClick={() => editor.chain().focus().toggleHeaderRow().run()} type="button">切换表头行</button>
+          <button disabled={!editor.isActive("table")} onClick={() => editor.chain().focus().deleteTable().run()} type="button">删除表格</button>
+        </DropdownButton>
+        <ToolbarButton onClick={() => editor.chain().focus().insertInlineMath().run()} title="插入行内公式">
+          <Sigma size={16} />
+        </ToolbarButton>
+        <ToolbarButton onClick={() => editor.chain().focus().insertBlockMath().run()} title="插入块级公式">
+          <span style={{ fontSize: 13 }}>$$</span>
+        </ToolbarButton>
+      </div>
+
+      <ToolbarSeparator />
+
+      <div className="toolbar-group">
         <ToolbarButton
           disabled={isSelectionInsideSpecialBlock(editor)}
           onClick={() => editor.chain().focus().setCallout().run()}
@@ -712,10 +743,6 @@ function htmlToMarkdown(html: string): string {
   return nodeToMarkdown(container);
 }
 
-function stripStoredHtmlArtifacts(markdown: string) {
-  return markdown.replace(/<span\b[^>]*>([\s\S]*?)<\/span>/gi, "$1");
-}
-
 function isEditorBodyEmpty(editor: Editor) {
   const doc = editor.state.doc;
   if (doc.childCount !== 1) return false;
@@ -729,137 +756,6 @@ function detectMarkdownLocally(content: string) {
     features,
     isMarkdown: features.length > 0,
   };
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function renderInlineMarkdown(value: string) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
-    .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, "<em>$1</em>")
-    .replace(/_([^_\n]+)_/g, "<em>$1</em>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
-}
-
-function markdownToHtml(markdown: string) {
-  const lines = stripStoredHtmlArtifacts(markdown).replace(/\r\n/g, "\n").split("\n");
-  const html: string[] = [];
-  let listType: "ul" | "ol" | null = null;
-  let inCode = false;
-  let codeLanguage = "";
-  let codeLines: string[] = [];
-  let blockquoteLines: string[] = [];
-
-  const closeList = () => {
-    if (!listType) return;
-    html.push(`</${listType}>`);
-    listType = null;
-  };
-
-  const closeBlockquote = () => {
-    if (!blockquoteLines.length) return;
-    html.push(`<blockquote><p>${blockquoteLines.map(renderInlineMarkdown).join("<br>")}</p></blockquote>`);
-    blockquoteLines = [];
-  };
-
-  for (const line of lines) {
-    const fence = line.match(/^```(\w+)?\s*$/);
-    if (fence) {
-      closeList();
-      closeBlockquote();
-      if (inCode) {
-        const languageAttr = codeLanguage ? ` data-language="${escapeHtml(codeLanguage)}"` : "";
-        html.push(`<pre><code${languageAttr}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-        inCode = false;
-        codeLanguage = "";
-        codeLines = [];
-      } else {
-        inCode = true;
-        codeLanguage = fence[1] || "";
-      }
-      continue;
-    }
-
-    if (inCode) {
-      codeLines.push(line);
-      continue;
-    }
-
-    if (!line.trim()) {
-      closeList();
-      closeBlockquote();
-      html.push("<p></p>");
-      continue;
-    }
-
-    const heading = line.match(/^(#{1,6})\s+(.+)$/);
-    if (heading) {
-      closeList();
-      closeBlockquote();
-      const level = heading[1].length;
-      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-      continue;
-    }
-
-    const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
-    if (unordered) {
-      closeBlockquote();
-      if (listType !== "ul") {
-        closeList();
-        html.push("<ul>");
-        listType = "ul";
-      }
-      html.push(`<li>${renderInlineMarkdown(unordered[1])}</li>`);
-      continue;
-    }
-
-    const ordered = line.match(/^\s*\d+\.\s+(.+)$/);
-    if (ordered) {
-      closeBlockquote();
-      if (listType !== "ol") {
-        closeList();
-        html.push("<ol>");
-        listType = "ol";
-      }
-      html.push(`<li>${renderInlineMarkdown(ordered[1])}</li>`);
-      continue;
-    }
-
-    const quote = line.match(/^\s{0,3}>\s+(.+)$/);
-    if (quote) {
-      closeList();
-      blockquoteLines.push(quote[1]);
-      continue;
-    }
-
-    if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
-      closeList();
-      closeBlockquote();
-      html.push("<hr>");
-      continue;
-    }
-
-    closeList();
-    closeBlockquote();
-    html.push(`<p>${renderInlineMarkdown(line)}</p>`);
-  }
-
-  if (inCode) {
-    const languageAttr = codeLanguage ? ` data-language="${escapeHtml(codeLanguage)}"` : "";
-    html.push(`<pre><code${languageAttr}>${escapeHtml(codeLines.join("\n"))}</code></pre>`);
-  }
-  closeList();
-  closeBlockquote();
-
-  return html.join("\n");
 }
 
 function paragraphToMarkdown(paragraph: Pick<StoredDocumentParagraph, "type" | "level" | "content">) {
@@ -921,6 +817,12 @@ function inlineToMarkdown(node: ChildNode): string {
   if (!(node instanceof HTMLElement)) return "";
 
   const tag = node.tagName.toLowerCase();
+  if (tag === "span" && node.getAttribute("data-type") === "inline-math") {
+    return `$${node.getAttribute("data-latex") || node.textContent || ""}$`;
+  }
+  if (tag === "span" && node.hasAttribute("data-latex")) {
+    return `$${node.getAttribute("data-latex") || ""}$`;
+  }
   const inner = Array.from(node.childNodes).map(inlineToMarkdown).join("");
 
   if (tag === "strong" || tag === "b") return `**${inner}**`;
@@ -933,6 +835,27 @@ function inlineToMarkdown(node: ChildNode): string {
   return inner;
 }
 
+function escapeMarkdownTableCell(value: string) {
+  return value.replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
+}
+
+function tableToMarkdown(table: HTMLElement) {
+  const rows = Array.from(table.querySelectorAll("tr")).map((row) =>
+    Array.from(row.children)
+      .filter((cell) => ["td", "th"].includes(cell.tagName.toLowerCase()))
+      .map((cell) => escapeMarkdownTableCell(Array.from(cell.childNodes).map(inlineToMarkdown).join("").trim())),
+  );
+  if (!rows.length) return "";
+  const columnCount = Math.max(...rows.map((row) => row.length));
+  const normalize = (row: string[]) => Array.from({ length: columnCount }, (_, index) => row[index] || "");
+  const [firstRow, ...bodyRows] = rows.map(normalize);
+  return [
+    `| ${firstRow.join(" | ")} |`,
+    `| ${Array.from({ length: columnCount }, () => "---").join(" | ")} |`,
+    ...bodyRows.map((row) => `| ${row.join(" | ")} |`),
+  ].join("\n");
+}
+
 function nodeToMarkdown(node: ChildNode): string {
   if (node.nodeType === Node.TEXT_NODE) {
     return node.textContent || "";
@@ -942,6 +865,15 @@ function nodeToMarkdown(node: ChildNode): string {
   const tag = node.tagName.toLowerCase();
   const inline = () => Array.from(node.childNodes).map(inlineToMarkdown).join("").trim();
 
+  if (tag === "div" && node.getAttribute("data-type") === "block-math") {
+    const blockLatex = node.getAttribute("data-latex") || node.querySelector("[data-latex]")?.getAttribute("data-latex") || node.textContent || "";
+    return `$$\n${blockLatex}\n$$`;
+  }
+  if (tag === "span" && node.getAttribute("data-type") === "inline-math") {
+    const inlineLatex = node.getAttribute("data-latex") || node.querySelector("[data-latex]")?.getAttribute("data-latex") || node.textContent || "";
+    return `$${inlineLatex}$`;
+  }
+  if (tag === "table") return tableToMarkdown(node);
   if (/^h[1-6]$/.test(tag)) {
     const level = Number(tag[1]);
     return `${"#".repeat(level)} ${inline()}`;
@@ -1133,6 +1065,14 @@ export function EditorPage({
       }),
       Typography,
       Underline,
+      Table.configure({
+        resizable: false,
+      }),
+      TableRow,
+      TableHeader,
+      TableCell,
+      InlineMath,
+      BlockMath,
       CalloutBlock,
       ToggleBlock,
       NoNestedSpecialBlocks,
@@ -1348,15 +1288,29 @@ export function EditorPage({
   const writeToClipboard = async (type: "markdown" | "plain") => {
     if (!editor) return;
     try {
+      let text: string;
       if (type === "markdown") {
         const body = htmlToMarkdown(editor.getHTML());
         const title = documentTitle.trim();
-        const md = title ? `# ${title}${body ? `\n\n${body}` : ""}` : body;
-        await navigator.clipboard.writeText(md);
+        text = title ? `# ${title}${body ? `\n\n${body}` : ""}` : body;
       } else {
         const body = editor.getText();
         const title = documentTitle.trim();
-        await navigator.clipboard.writeText(title ? `${title}${body ? `\n\n${body}` : ""}` : body);
+        text = title ? `${title}${body ? `\n\n${body}` : ""}` : body;
+      }
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        // navigator.clipboard 在非 HTTPS 环境下不可用，使用 execCommand 降级
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;left:-9999px;top:-9999px;opacity:0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        if (!ok) throw new Error("execCommand copy failed");
       }
       setCopyState("done");
     } catch {

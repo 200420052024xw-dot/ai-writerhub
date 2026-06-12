@@ -1,6 +1,7 @@
 import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from chromadb.errors import InvalidArgumentError
 from fastapi.responses import StreamingResponse
 
 from app.schemas.documents import (
@@ -15,7 +16,6 @@ from app.schemas.documents import (
 from app.schemas.rag import RagIndexRequest
 from app.services.document_service import (
     complete_document_index,
-    content_hash,
     create_document,
     delete_document,
     get_document,
@@ -26,6 +26,7 @@ from app.services.document_service import (
     permanent_delete_document,
     purge_expired_trash,
     quick_upload_document,
+    markdown_to_paragraph_inputs,
     recognize_document,
     restore_document,
     trash_document,
@@ -104,10 +105,16 @@ async def index_document(document_id: str, payload: RagIndexRequest | None = Non
         if chunk_count == 0:
             mark_document_index_failed(document_id)
             raise HTTPException(status_code=400, detail="文档内容为空，无法生成知识库索引")
+    except InvalidArgumentError as exc:
+        mark_document_index_failed(document_id)
+        message = str(exc)
+        if "expecting embedding with dimension" in message:
+            raise HTTPException(status_code=409, detail="Embedding 模型与当前向量索引维度不一致，请重新解析文档或切换回原模型。") from exc
+        raise
     except Exception:
         mark_document_index_failed(document_id)
         raise
-    return complete_document_index(document_id, content_hash(document.content))
+    return complete_document_index(document_id, document.content_hash)
 
 
 @router.post("/documents/upload", response_model=DocumentDetail)
@@ -206,10 +213,26 @@ def _paragraphs_to_format(doc_paragraphs) -> list[FormatDocumentParagraph]:
     ]
 
 
+def _document_export_paragraphs(doc: DocumentDetail) -> list[FormatDocumentParagraph]:
+    if doc.paragraphs:
+        return _paragraphs_to_format(doc.paragraphs)
+
+    fallback = markdown_to_paragraph_inputs(doc.content, doc.title)
+    return [
+        FormatDocumentParagraph(
+            paragraph_id=p.id or f"export-{index}",
+            type=p.type,
+            level=p.level,
+            content=p.content,
+        )
+        for index, p in enumerate(fallback)
+    ]
+
+
 @router.get("/documents/{document_id}/export/docx")
 async def export_docx(document_id: str) -> StreamingResponse:
     doc = get_document(document_id)
-    paragraphs = _paragraphs_to_format(doc.paragraphs)
+    paragraphs = _document_export_paragraphs(doc)
     title = doc.title.strip() or "无标题文档"
     payload = FormatExportDocxRequest(title=title, paragraphs=paragraphs, config=_DEFAULT_EXPORT_CONFIG)
     buffer = build_docx(payload)
@@ -225,7 +248,7 @@ async def export_docx(document_id: str) -> StreamingResponse:
 @router.get("/documents/{document_id}/export/pdf")
 async def export_pdf(document_id: str) -> StreamingResponse:
     doc = get_document(document_id)
-    paragraphs = _paragraphs_to_format(doc.paragraphs)
+    paragraphs = _document_export_paragraphs(doc)
     title = doc.title.strip() or "无标题文档"
     buffer = build_pdf(title, paragraphs, _DEFAULT_EXPORT_CONFIG)
     safe_title = re.sub(r'[\\/:*?"<>|]', '', title)[:50] or "文档"

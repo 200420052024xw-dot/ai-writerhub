@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from io import BytesIO
 
 import fitz
@@ -116,26 +117,104 @@ def _normalize_field(key: str, value: str) -> str:
         if k.lower() == value_lower:
             return v
 
-    # Substring match
-    for k, v in norm_table.items():
+    # Substring match. Prefer more specific tokens so "1.5倍行距" does not
+    # match the generic "1" option before the intended "1.5" option.
+    for k, v in sorted(norm_table.items(), key=lambda item: len(item[0]), reverse=True):
         if k.lower() in value_lower or value_lower in k.lower():
             return v
 
     return value
 
 
+def _near_scope(prompt: str, index: int) -> str:
+    context = prompt[max(0, index - 12): index + 16]
+    if any(token in context for token in ("一级标题", "1级标题", "h1", "H1")):
+        return "h1"
+    if any(token in context for token in ("二级标题", "2级标题", "h2", "H2")):
+        return "h2"
+    if any(token in context for token in ("三级标题", "3级标题", "h3", "H3")):
+        return "h3"
+    if any(token in context for token in ("大标题", "主标题", "标题")):
+        return "title"
+    return "body"
+
+
+def _apply_prompt_overrides(current: dict, prompt: str) -> None:
+    """Deterministic fallback for common Chinese formatting phrases."""
+    lower_prompt = prompt.lower()
+
+    def set_scoped(scope: str, suffix: str, value: str | bool) -> None:
+        key = f"{scope}{suffix[0].upper()}{suffix[1:]}"
+        if key in current:
+            current[key] = value
+
+    for raw, normalized in sorted(_FONT_NORM.items(), key=lambda item: len(item[0]), reverse=True):
+        needle = raw.lower()
+        for match in re.finditer(re.escape(needle), lower_prompt):
+            set_scoped(_near_scope(prompt, match.start()), "font", normalized)
+
+    for raw, normalized in sorted(_FONTSIZE_NORM.items(), key=lambda item: len(item[0]), reverse=True):
+        if raw.replace(".", "", 1).isdigit():
+            continue
+        needle = raw.lower()
+        for match in re.finditer(re.escape(needle), lower_prompt):
+            set_scoped(_near_scope(prompt, match.start()), "fontSize", normalized)
+
+    for field, norm_table in (
+        ("lineHeight", _LINEHEIGHT_NORM),
+        ("indent", _INDENT_NORM),
+        ("align", _ALIGN_NORM),
+        ("paperSize", _PAPERSIZE_NORM),
+        ("margin", _MARGIN_NORM),
+        ("orientation", _FIELD_NORM["orientation"]),
+    ):
+        for raw, normalized in sorted(norm_table.items(), key=lambda item: len(item[0]), reverse=True):
+            if field == "lineHeight" and raw in ("1", "2"):
+                continue
+            if raw.lower() in lower_prompt:
+                current[field] = normalized
+                break
+
+    for match in re.finditer("不加粗|取消加粗|无需加粗|加粗", prompt):
+        scope = _near_scope(prompt, match.start())
+        value = match.group(0) == "加粗"
+        set_scoped(scope, "bold", value)
+
+
+def _extract_json_object(raw: str) -> dict:
+    content = raw.strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"\s*```$", "", content).strip()
+
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(content):
+        if char != "{":
+            continue
+        try:
+            parsed, _ = decoder.raw_decode(content[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    raise HTTPException(status_code=502, detail="模型未返回有效 JSON")
+
+
 async def parse_format_config(prompt: str, current_config: FormatConfig, model_config: RuntimeModelConfig) -> FormatConfig:
     system_prompt, user_prompt = build_format_parse_prompts(prompt, current_config.model_dump())
     raw = await call_chat_model(system_prompt, user_prompt, model_config)
-    content = raw.strip()
+    content = json.dumps(_extract_json_object(raw), ensure_ascii=False)
     if content.startswith("```"):
         content = content.strip("`").removeprefix("json").strip()
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=502, detail="模型未返回有效 JSON") from exc
+    if isinstance(parsed.get("config"), dict):
+        parsed = parsed["config"]
 
     current = current_config.model_dump()
+    _apply_prompt_overrides(current, prompt)
     extra_parts: list[str] = []
     existing_extra = current.get("extraRequirements", "")
     if existing_extra:
@@ -361,7 +440,7 @@ async def organize_document(
         config.model_dump(),
     )
     raw = await call_chat_model(system_prompt, user_prompt, model_config)
-    content = raw.strip()
+    content = json.dumps(_extract_json_object(raw), ensure_ascii=False)
     if content.startswith("```"):
         content = content.strip("`").removeprefix("json").strip()
     try:

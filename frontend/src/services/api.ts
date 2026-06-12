@@ -585,6 +585,7 @@ export type RagRuntimeConfig = {
   api_key: string;
   base_url: string;
   model: string;
+  use_system_model?: boolean;
   recall_strategy: "vector" | "hybrid";
   enable_rerank: boolean;
   rerank_model_path: string;
@@ -605,6 +606,7 @@ export type RagSearchResult = {
 export type RagStreamEvent =
   | { type: "retrieval"; results: RagSearchResult[] }
   | { type: "chunk"; content: string }
+  | { type: "error"; message: string }
   | { type: "complete" };
 
 export type ChatMessageRecord = {
@@ -784,7 +786,7 @@ export async function permanentDeleteDocument(documentId: string): Promise<void>
   const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/permanent`, {
     method: "DELETE",
   });
-  if (!response.ok) throw new Error("Permanent delete failed");
+  if (!response.ok) throw new Error(await response.text() || "Permanent delete failed");
 }
 
 export async function purgeTrash(): Promise<{ purged: number }> {

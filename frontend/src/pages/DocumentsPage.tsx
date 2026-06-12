@@ -184,7 +184,7 @@ export function DocumentsPage() {
     setIndexingId(documentId);
     setMessage("");
     try {
-      await indexStoredDocumentWithRag(documentId, toRagRuntimeConfig(loadRagSettings()));
+      await indexStoredDocumentWithRag(documentId, toRagRuntimeConfig(loadRagSettings(), loadModelSettings().useSystemModel));
       await refreshDocuments();
       setSelectedDocs((current) => new Set([...current, documentId]));
       setMessage("文档解析完成");
@@ -240,7 +240,7 @@ export function DocumentsPage() {
         {
           question: trimmed,
           document_ids: [...selectedDocs],
-          rag_config: toRagRuntimeConfig(loadRagSettings()),
+          rag_config: toRagRuntimeConfig(loadRagSettings(), settings.useSystemModel),
           chat_config: {
             api_key: settings.apiKey,
             base_url: settings.baseUrl,
@@ -257,10 +257,18 @@ export function DocumentsPage() {
             setAnswer((current) => current + event.content);
             setChatTurns((current) => current.map((turn) => (turn.id === nextTurn.id ? { ...turn, answer: turn.answer + event.content } : turn)));
           }
+          if (event.type === "error") {
+            const content = `知识库问答失败：${event.message}`;
+            setAnswer(content);
+            setChatTurns((current) => current.map((turn) => (turn.id === nextTurn.id ? { ...turn, answer: content } : turn)));
+          }
         },
       );
-    } catch {
-      setMessage("问答失败，请检查后端服务、索引或模型配置");
+    } catch (error) {
+      const content = `知识库问答失败：${error instanceof Error ? error.message : "请检查后端服务、索引或模型配置"}`;
+      setAnswer(content);
+      setChatTurns((current) => current.map((turn) => (turn.id === nextTurn.id ? { ...turn, answer: content } : turn)));
+      setMessage(content);
     } finally {
       setLoading(false);
       window.setTimeout(() => setMessage(""), 2200);

@@ -269,9 +269,8 @@ function SystemModelSettings() {
   const handleSaveChat = async () => {
     try {
       const useMain = (get("system_model_vision_use_main_config") || "1") !== "0";
-      await adminUpdateSystemSettings({
+      const nextSettings: Record<string, string> = {
         system_model_provider: get("system_model_provider"),
-        system_model_api_key: get("system_model_api_key"),
         system_model_base_url: get("system_model_base_url"),
         system_model_name: get("system_model_name"),
         ...(useMain
@@ -280,7 +279,10 @@ function SystemModelSettings() {
               system_model_vision_model: get("system_model_vision_model"),
             }
           : {}),
-      });
+      };
+      const apiKey = get("system_model_api_key").trim();
+      if (apiKey) nextSettings.system_model_api_key = apiKey;
+      await adminUpdateSystemSettings(nextSettings);
       setChatSaved(true);
       window.setTimeout(() => setChatSaved(false), 1800);
     } catch { /* ignore */ }
@@ -288,13 +290,15 @@ function SystemModelSettings() {
 
   const handleSaveVision = async () => {
     try {
-      await adminUpdateSystemSettings({
+      const nextSettings: Record<string, string> = {
         system_model_vision_provider: get("system_model_vision_provider"),
         system_model_vision_use_main_config: get("system_model_vision_use_main_config") || "0",
-        system_model_vision_api_key: get("system_model_vision_api_key"),
         system_model_vision_base_url: get("system_model_vision_base_url"),
         system_model_vision_model: get("system_model_vision_model"),
-      });
+      };
+      const apiKey = get("system_model_vision_api_key").trim();
+      if (apiKey) nextSettings.system_model_vision_api_key = apiKey;
+      await adminUpdateSystemSettings(nextSettings);
       setVisionSaved(true);
       window.setTimeout(() => setVisionSaved(false), 1800);
     } catch { /* ignore */ }
@@ -334,14 +338,16 @@ function SystemModelSettings() {
 
   const handleSaveRag = async () => {
     try {
-      await adminUpdateSystemSettings({
+      const nextSettings: Record<string, string> = {
         system_rag_embedding_source: "api",
-        system_rag_api_key: get("system_rag_api_key"),
         system_rag_base_url: get("system_rag_base_url"),
         system_rag_model: get("system_rag_model"),
         system_rag_enable_rerank: get("system_rag_rerank_model_path").trim() ? "1" : "0",
         system_rag_rerank_model_path: get("system_rag_rerank_model_path"),
-      });
+      };
+      const apiKey = get("system_rag_api_key").trim();
+      if (apiKey) nextSettings.system_rag_api_key = apiKey;
+      await adminUpdateSystemSettings(nextSettings);
       setRagSaved(true);
       window.setTimeout(() => setRagSaved(false), 1800);
     } catch { /* ignore */ }
@@ -403,7 +409,7 @@ function SystemModelSettings() {
           <label>
             <span><KeyRound size={17} />API Key</span>
             <div className="secret-input">
-              <input autoComplete="off" onChange={(e) => set("system_model_api_key", e.target.value)} placeholder="sk-..." type={showKey ? "text" : "password"} value={get("system_model_api_key")} />
+              <input autoComplete="off" onChange={(e) => set("system_model_api_key", e.target.value)} placeholder="留空则不修改已保存 Key" type={showKey ? "text" : "password"} value={get("system_model_api_key")} />
               <button onClick={() => setShowKey((v) => !v)} type="button" aria-label="切换密钥显示">{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button>
             </div>
           </label>
@@ -466,7 +472,7 @@ function SystemModelSettings() {
                 <label>
                   <span><KeyRound size={17} />视觉 API Key</span>
                   <div className="secret-input">
-                    <input autoComplete="off" onChange={(e) => set("system_model_vision_api_key", e.target.value)} placeholder="sk-..." type={showKey ? "text" : "password"} value={get("system_model_vision_api_key")} />
+                    <input autoComplete="off" onChange={(e) => set("system_model_vision_api_key", e.target.value)} placeholder="留空则不修改已保存 Key" type={showKey ? "text" : "password"} value={get("system_model_vision_api_key")} />
                     <button onClick={() => setShowKey((v) => !v)} type="button" aria-label="切换视觉密钥显示">{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button>
                   </div>
                 </label>
@@ -516,7 +522,7 @@ function SystemModelSettings() {
         <div className="settings-form">
           <label>
             <span><KeyRound size={17} />Embedding API Key</span>
-            <input onChange={(e) => set("system_rag_api_key", e.target.value)} placeholder="sk-..." type="password" value={get("system_rag_api_key")} />
+            <input autoComplete="off" onChange={(e) => set("system_rag_api_key", e.target.value)} placeholder="留空则不修改已保存 Key" type="password" value={get("system_rag_api_key")} />
           </label>
           <label>
             <span><ServerCog size={17} />Embedding Base URL</span>

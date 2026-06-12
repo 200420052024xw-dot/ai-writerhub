@@ -15,7 +15,7 @@ export const ToggleBlock = Node.create({
 
   group: "block",
 
-  content: "(paragraph|heading|bulletList|orderedList|blockquote|codeBlock|horizontalRule)+",
+  content: "(paragraph|heading|bulletList|orderedList|blockquote|codeBlock|horizontalRule|table|blockMath)+",
 
   defining: true,
 

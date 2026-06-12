@@ -42,6 +42,18 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
   const [trashMessage, setTrashMessage] = useState("");
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
+  const errorMessage = (error: unknown, fallback: string) => {
+    const raw = error instanceof Error ? error.message : "";
+    if (!raw) return fallback;
+    try {
+      const parsed = JSON.parse(raw) as { detail?: unknown };
+      if (typeof parsed.detail === "string" && parsed.detail.trim()) return parsed.detail;
+    } catch {
+      // Keep the original error text when the backend did not return JSON.
+    }
+    return raw;
+  };
+
   const selectProvider = (providerId: ModelProviderId) => {
     const preset = VISION_MODEL_PROVIDER_PRESETS.find((item) => item.id === providerId);
     if (!preset) return;
@@ -214,7 +226,8 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
   };
 
   const testRagConnection = async () => {
-    if (!ragSettings.apiKey.trim() || !ragSettings.baseUrl.trim() || !ragSettings.model.trim()) {
+    const hasCredentials = settings.useSystemModel || ragSettings.apiKey.trim();
+    if (!hasCredentials || !ragSettings.baseUrl.trim() || !ragSettings.model.trim()) {
       setRagTestState("failed");
       setRagTestMessage("请填写 API Key、Base URL 和模型名称");
       return;
@@ -223,7 +236,7 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
     setRagTestState("idle");
     setRagTestMessage("");
     try {
-      await testRagEmbedding(toRagRuntimeConfig(ragSettings));
+      await testRagEmbedding(toRagRuntimeConfig(ragSettings, settings.useSystemModel));
       setRagTestState("ok");
       setRagTestMessage("连接正常");
     } catch (error) {
@@ -268,8 +281,8 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
       setTrashMessage("已永久删除");
       window.setTimeout(() => setTrashMessage(""), 2000);
       await loadTrash();
-    } catch {
-      setTrashMessage("删除失败");
+    } catch (error) {
+      setTrashMessage(errorMessage(error, "删除失败"));
     }
   };
 

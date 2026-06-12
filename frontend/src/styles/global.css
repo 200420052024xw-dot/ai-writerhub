@@ -918,6 +918,86 @@ kbd {
   color: #c7ccd5;
 }
 
+.tiptap-editor .tiptap table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 16px;
+  table-layout: fixed;
+  overflow: hidden;
+  border: 1px solid #d8dee9;
+}
+
+.tiptap-editor .tiptap th,
+.tiptap-editor .tiptap td {
+  position: relative;
+  min-width: 72px;
+  padding: 8px 10px;
+  border: 1px solid #d8dee9;
+  vertical-align: top;
+}
+
+.tiptap-editor .tiptap th {
+  background: #f4f7fb;
+  color: #1f2a44;
+  font-weight: 700;
+}
+
+.tiptap-editor .tiptap th p,
+.tiptap-editor .tiptap td p {
+  margin: 0;
+}
+
+.tiptap-editor .tiptap .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: rgba(15, 91, 255, 0.12);
+}
+
+.tiptap-editor .math-node {
+  border-radius: 5px;
+}
+
+.tiptap-editor .inline-math {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 4px;
+  background: #f8fafc;
+}
+
+.tiptap-editor .block-math {
+  display: block;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  text-align: center;
+  background: #fbfdff;
+  border: 1px solid #e2e8f0;
+}
+
+.tiptap-editor .math-invalid {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+}
+
+.tiptap-editor .math-source-input {
+  width: min(100%, 720px);
+  border: 1px solid #94a3b8;
+  border-radius: 5px;
+  padding: 6px 8px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 14px;
+  color: #17233c;
+  background: #fff;
+  outline: none;
+}
+
+.tiptap-editor textarea.math-source-input {
+  min-height: 72px;
+  resize: vertical;
+}
+
 /* ===== Callout Block ===== */
 .callout-block {
   display: flex;
@@ -5292,6 +5372,44 @@ button:disabled {
   font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
+}
+
+.parse-complete-modal {
+  background: #fff;
+  border-radius: 16px;
+  width: 360px;
+  padding: 40px 32px 28px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
+  text-align: center;
+}
+
+.parse-complete-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 20px;
+  border-radius: 50%;
+  background: #ecfdf5;
+  color: #10b981;
+}
+
+.parse-complete-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.parse-complete-hint {
+  margin: 0 0 28px;
+  font-size: 14px;
+  color: #94a3b8;
+}
+
+.parse-complete-btn {
+  min-width: 120px;
 }
 
 .statusbar {

@@ -101,6 +101,12 @@ _SYSTEM_SETTING_KEYS = {
     "system_rag_rerank_model_path",
 }
 
+_SECRET_SETTING_KEYS = {
+    "system_model_api_key",
+    "system_model_vision_api_key",
+    "system_rag_api_key",
+}
+
 
 def get_system_settings() -> dict[str, str]:
     require_admin()
@@ -115,6 +121,8 @@ def update_system_settings(settings: dict[str, str]) -> None:
     with connect() as conn:
         for key, value in settings.items():
             if key not in _SYSTEM_SETTING_KEYS:
+                continue
+            if key in _SECRET_SETTING_KEYS and not value.strip():
                 continue
             conn.execute(
                 """

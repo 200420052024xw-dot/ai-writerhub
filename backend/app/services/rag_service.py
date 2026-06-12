@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -42,6 +43,8 @@ def provider_base_url(base_url: str) -> str:
 
 def runtime_rag_config(config: RagRuntimeConfig | None = None) -> RagRuntimeConfig:
     if config:
+        if config.use_system_model:
+            return with_system_rag_credentials(config)
         return config
     settings = get_settings()
     return RagRuntimeConfig(
@@ -56,6 +59,42 @@ def runtime_rag_config(config: RagRuntimeConfig | None = None) -> RagRuntimeConf
     )
 
 
+def _get_system_rag_setting(key: str) -> str:
+    from app.core.database import _ConnectionCtx
+    with _ConnectionCtx() as conn:
+        row = conn.execute(
+            "SELECT setting_value FROM system_settings WHERE setting_key = %s",
+            (key,),
+        ).fetchone()
+    return row["setting_value"] if row else ""
+
+
+def require_system_rag_member() -> None:
+    from app.core.database import _ConnectionCtx
+    with _ConnectionCtx() as conn:
+        row = conn.execute(
+            "SELECT is_member FROM users WHERE id = %s",
+            (current_user_id(),),
+        ).fetchone()
+    if not row or not row["is_member"]:
+        raise HTTPException(status_code=403, detail="需要会员权限")
+
+
+def with_system_rag_credentials(config: RagRuntimeConfig) -> RagRuntimeConfig:
+    """Fill member-only system RAG credentials without exposing keys to the frontend."""
+    if config.embedding_source != "api":
+        return config
+    require_system_rag_member()
+    return config.model_copy(
+        update={
+            "api_key": config.api_key.strip() or _get_system_rag_setting("system_rag_api_key"),
+            "base_url": config.base_url.strip() or _get_system_rag_setting("system_rag_base_url"),
+            "model": config.model.strip() or _get_system_rag_setting("system_rag_model"),
+            "rerank_model_path": config.rerank_model_path.strip() or _get_system_rag_setting("system_rag_rerank_model_path"),
+        }
+    )
+
+
 @lru_cache(maxsize=2)
 def load_local_embedding_model(model_path: str):
     try:
@@ -65,14 +104,29 @@ def load_local_embedding_model(model_path: str):
     return SentenceTransformer(model_path)
 
 
-def chroma_collection():
+def collection_name_for_config(config: RagRuntimeConfig | None = None) -> str:
+    if config is None:
+        return COLLECTION_NAME
+    signature = "|".join(
+        [
+            config.embedding_source.strip(),
+            config.base_url.strip().rstrip("/} \t\r\n"),
+            config.model.strip(),
+            config.local_model_path.strip(),
+        ]
+    )
+    digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+    return f"{COLLECTION_NAME}_{digest}"
+
+
+def chroma_collection(config: RagRuntimeConfig | None = None):
     try:
         import chromadb
     except ImportError as exc:
         raise HTTPException(status_code=500, detail="未安装 chromadb，请先安装后端依赖") from exc
     CHROMA_DIR.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    return client.get_or_create_collection(name=COLLECTION_NAME, metadata={"hnsw:space": "cosine"})
+    return client.get_or_create_collection(name=collection_name_for_config(config), metadata={"hnsw:space": "cosine"})
 
 
 async def embed_texts(texts: list[str], config: RagRuntimeConfig) -> list[list[float]]:
@@ -129,7 +183,7 @@ async def embed_texts(texts: list[str], config: RagRuntimeConfig) -> list[list[f
 
 
 async def test_embedding_model(config: RagRuntimeConfig) -> None:
-    test_config = config.model_copy(update={"embedding_source": "api"})
+    test_config = runtime_rag_config(config).model_copy(update={"embedding_source": "api"})
     vectors = await embed_texts(["Hello, world!"], test_config)
     if not vectors or not vectors[0]:
         raise HTTPException(status_code=502, detail="Embedding provider returned an empty vector")
@@ -220,18 +274,18 @@ def split_document_paragraph_chunks(document: DocumentDetail) -> list[tuple[str 
     return chunks
 
 
-def delete_document_index(document_id: str) -> None:
+def delete_document_index(document_id: str, config: RagRuntimeConfig | None = None) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM rag_chunks WHERE document_id = %s", (document_id,))
     try:
-        chroma_collection().delete(where={"document_id": document_id})
+        chroma_collection(config).delete(where={"document_id": document_id})
     except Exception:
         pass
 
 
 async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConfig | None = None) -> int:
     rag_config = runtime_rag_config(config)
-    delete_document_index(document.id)
+    delete_document_index(document.id, rag_config)
     paragraph_chunks = split_document_paragraph_chunks(document)
     if not paragraph_chunks:
         return 0
@@ -251,7 +305,7 @@ async def index_document_chunks(document: DocumentDetail, config: RagRuntimeConf
         }
         for index, (paragraph_id, paragraph_index, _) in enumerate(paragraph_chunks)
     ]
-    chroma_collection().add(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
+    chroma_collection(rag_config).add(ids=ids, documents=chunks, metadatas=metadatas, embeddings=embeddings)
 
     with connect() as conn:
         for chunk_id, chunk, metadata in zip(ids, chunks, metadatas):
@@ -293,7 +347,7 @@ async def vector_search(question: str, document_ids: list[str], config: RagRunti
             {"document_id": {"$in": document_ids}},
         ]
     }
-    result = chroma_collection().query(
+    result = chroma_collection(config).query(
         query_embeddings=[query_embedding],
         n_results=VECTOR_TOP_K,
         where=where,
@@ -490,19 +544,24 @@ async def stream_rag_answer(
         yield f"data: {json.dumps({'type': 'chunk', 'content': '未找到可用的检索结果，请先选择并解析文档。'}, ensure_ascii=False)}\n\n"
         yield "data: {\"type\":\"complete\"}\n\n"
         return
+    buffer = ""
     async for chunk in stream_chat_model(build_rag_messages(question, contexts), chat_config):
-        text = chunk.decode("utf-8", errors="ignore")
-        for line in text.splitlines():
-            if not line.startswith("data:"):
-                continue
-            data = line.removeprefix("data:").strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                parsed = json.loads(data)
-                delta = parsed.get("choices", [{}])[0].get("delta", {}).get("content")
-            except json.JSONDecodeError:
-                delta = None
-            if delta:
-                yield f"data: {json.dumps({'type': 'chunk', 'content': delta}, ensure_ascii=False)}\n\n"
+        buffer += chunk.decode("utf-8", errors="ignore")
+        parts = buffer.split("\n\n")
+        buffer = parts.pop() or ""
+        for part in parts:
+            for line in part.splitlines():
+                if not line.startswith("data:"):
+                    continue
+                data = line.removeprefix("data:").strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    parsed = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                choice = parsed.get("choices", [{}])[0]
+                delta = choice.get("delta", {}).get("content") or choice.get("message", {}).get("content")
+                if delta:
+                    yield f"data: {json.dumps({'type': 'chunk', 'content': delta}, ensure_ascii=False)}\n\n"
     yield "data: {\"type\":\"complete\"}\n\n"

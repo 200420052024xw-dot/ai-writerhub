@@ -10,6 +10,7 @@ const SettingsPage = lazy(() => import("../pages/SettingsPage").then((m) => ({ d
 const AdminPage = lazy(() => import("../pages/AdminPage").then((m) => ({ default: m.AdminPage })));
 import { AccountMenu } from "../components/AccountMenu";
 import { loadModelSettings, saveModelSettings, MODEL_PROVIDER_PRESETS } from "../services/modelSettings";
+import { loadRagSettings, saveRagSettings } from "../services/ragSettings";
 import { createStoredDocument, getActiveTranslationJobs, invalidateDocumentListCache, listStoredDocuments, getStoredDocument, getSystemModelConfig, type AuthUser, type StoredDocumentDetail, type StoredDocumentSummary, type TranslationJob } from "../services/api";
 import { userStorage } from "../services/userStorage";
 import type { HealthState, NavigationKey } from "../types";
@@ -329,6 +330,15 @@ export function AppShell({ healthState, user, onLogout, onUserChange }: AppShell
         visionUseMainConfig: config.vision_use_main_config,
         visionBaseUrl: config.vision_base_url,
         visionModel: config.vision_model,
+      });
+      saveRagSettings({
+        ...loadRagSettings(),
+        embeddingSource: (config.rag_embedding_source as "local" | "api") || "local",
+        apiKey: config.rag_api_key,
+        baseUrl: config.rag_base_url,
+        model: config.rag_model,
+        enableRerank: config.rag_enable_rerank,
+        rerankModelPath: config.rag_rerank_model_path,
       });
       setModelSettings(loadModelSettings());
     } catch {

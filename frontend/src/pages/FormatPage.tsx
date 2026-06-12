@@ -227,6 +227,7 @@ export function FormatPage({ sourceDocument }: { sourceDocument?: FormatSourceDo
   const printPdf = () => { setExportOpen(false); window.print(); };
 
   useEffect(() => { setEditedParagraphs(null); setDocxBlob(null); }, [sourceDocument?.id]);
+  useEffect(() => { setDocxBlob(null); }, [config]);
 
   useLayoutEffect(() => {
     if (!measureRef.current) return;

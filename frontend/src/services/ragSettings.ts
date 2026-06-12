@@ -81,13 +81,14 @@ export function saveRagSettings(settings: RagSettings) {
   userStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
 }
 
-export function toRagRuntimeConfig(settings: RagSettings) {
+export function toRagRuntimeConfig(settings: RagSettings, useSystemModel = false) {
   return {
     embedding_source: settings.embeddingSource,
     local_model_path: DEFAULT_RAG_SETTINGS.localModelPath,
     api_key: settings.apiKey,
     base_url: settings.baseUrl,
     model: settings.model,
+    use_system_model: useSystemModel,
     recall_strategy: settings.recallStrategy,
     enable_rerank: settings.enableRerank,
     rerank_model_path: settings.rerankModelPath,

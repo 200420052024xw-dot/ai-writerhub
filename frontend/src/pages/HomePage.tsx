@@ -23,7 +23,7 @@ import {
   exportDocumentDocx,
   exportDocumentPdf,
   getStoredDocument,
-  indexStoredDocument,
+  indexStoredDocumentWithRag,
   invalidateDocumentListCache,
   listStoredDocuments,
   quickUploadDocument,
@@ -34,6 +34,7 @@ import {
 } from "../services/api";
 import { userStorage } from "../services/userStorage";
 import { loadModelSettings, resolveVisionRuntimeConfig } from "../services/modelSettings";
+import { loadRagSettings, toRagRuntimeConfig } from "../services/ragSettings";
 
 type HomePageProps = {
   onOpenDocument: (document: StoredDocumentDetail) => void;
@@ -104,13 +105,15 @@ function escapeHtml(value: string) {
     .replace(/"/g, "&quot;");
 }
 
-function downloadBlob(content: BlobPart, filename: string, type: string) {
-  const blob = new Blob([content], { type });
+function downloadBlob(content: BlobPart | Blob, filename: string, type?: string) {
+  const blob = content instanceof Blob && !type ? content : new Blob([content], { type: type || "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  document.body.appendChild(link);
   link.click();
+  document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
 
@@ -391,8 +394,9 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
       current.map((doc) => (doc.id === documentId ? { ...doc, rag_status: "indexing" as const } : doc)),
     );
     try {
-      await indexStoredDocument(documentId);
-      await refresh();
+      await indexStoredDocumentWithRag(documentId, toRagRuntimeConfig(loadRagSettings(), loadModelSettings().useSystemModel));
+      invalidateDocumentListCache();
+      await refresh(true);
       showMessage("解析完成");
     } catch {
       setDocuments((current) =>
@@ -422,13 +426,13 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
 
       if (type === "word") {
         const blob = await exportDocumentDocx(documentId);
-        downloadBlob(blob, `${filename}.docx`, blob.type);
+        downloadBlob(blob, `${filename}.docx`);
         return;
       }
 
       if (type === "pdf") {
         const blob = await exportDocumentPdf(documentId);
-        downloadBlob(blob, `${filename}.pdf`, blob.type);
+        downloadBlob(blob, `${filename}.pdf`);
         return;
       }
     } catch {
@@ -453,10 +457,8 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
                 <ScanSearch size={36} />
               </div>
               <div className="parse-steps">
-                <div className="parse-step"><span className="parse-step-num">1</span>文档转换为图片页</div>
-                <div className="parse-step"><span className="parse-step-num">2</span>视觉模型识别内容</div>
-                <div className="parse-step"><span className="parse-step-num">3</span>文本清洗与分段切块</div>
-                <div className="parse-step"><span className="parse-step-num">4</span>向量化写入知识库</div>
+                <div className="parse-step"><span className="parse-step-num">1</span>文本清洗与分段切块</div>
+                <div className="parse-step"><span className="parse-step-num">2</span>向量化写入知识库</div>
               </div>
               <p className="modal-hint">解析完成后可在知识库页面进行文档问答。</p>
             </div>
@@ -769,25 +771,15 @@ export function HomePage({ onFormatDocument, onOpenDocument, onTranslateDocument
 
       {showCompleteModal && (
         <div className="modal-overlay" onClick={() => setShowCompleteModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3>解析完成</h3>
-              <button className="modal-close" onClick={() => setShowCompleteModal(false)} type="button">
-                <X size={18} />
-              </button>
+          <div className="parse-complete-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="parse-complete-icon">
+              <CheckCircle2 size={48} />
             </div>
-            <div className="modal-body">
-              <div className="parse-modal-icon">
-                <CheckCircle2 size={36} />
-              </div>
-              <p>{completeMessage}</p>
-              <p className="modal-hint">文档已可正常打开和编辑。</p>
-            </div>
-            <div className="modal-footer">
-              <button className="btn-primary" onClick={() => setShowCompleteModal(false)} type="button">
-                确定
-              </button>
-            </div>
+            <h3 className="parse-complete-title">{completeMessage}</h3>
+            <p className="parse-complete-hint">文档已可正常打开和编辑</p>
+            <button className="btn-primary parse-complete-btn" onClick={() => setShowCompleteModal(false)} type="button">
+              知道了
+            </button>
           </div>
         </div>
       )}
