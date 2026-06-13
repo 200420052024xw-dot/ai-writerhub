@@ -289,17 +289,12 @@ CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 # 系统 RAG 服务：本地 Embedding 模型路径
 RAG_EMBEDDING_SOURCE=local
 RAG_LOCAL_MODEL_PATH=F:\hf_cache\model
-
-# 可选：系统 RAG API 服务（会员选择 API 模型时使用）
-RAG_API_KEY=
-RAG_BASE_URL=https://api.siliconflow.cn/v1/embeddings
-RAG_MODEL=Qwen/Qwen3-VL-Embedding-8B
 RAG_RECALL_STRATEGY=hybrid
 RAG_ENABLE_RERANK=false
 RAG_RERANK_MODEL_PATH=
 ```
 
-AI 模型配置在前端 **设置页面** 中填写并按用户隔离保存；管理员也可以在后台配置系统模型，供会员用户使用。RAG 的本地模型由后端 `.env` 提供，用户在设置页只需要选择“本地模型”或“API 模型”：选择本地模型时使用 `RAG_LOCAL_MODEL_PATH`，选择 API 模型时使用用户自己的 API 配置，会员开启系统模型后则使用系统提供的 RAG API 配置。
+AI 模型配置在前端 **设置页面** 中填写并按用户隔离保存；管理员也可以在后台配置系统模型，供会员用户使用。RAG 的本地模型由后端 `.env` 提供，用户在设置页只需要选择“本地模型”或“API 模型”：选择本地模型时使用 `RAG_LOCAL_MODEL_PATH`，选择 API 模型时使用用户自己的 API 配置，会员开启系统模型后则使用管理员后台填写的系统 RAG API 配置。
 
 ```bash
 # 启动后端服务
@@ -347,9 +342,6 @@ npm run dev
 | `STATIC_DIR` | 前端静态文件目录（生产部署用） | 空 |
 | `RAG_EMBEDDING_SOURCE` | 系统默认嵌入来源：`local` 或 `api` | `local` |
 | `RAG_LOCAL_MODEL_PATH` | 系统本地 Embedding 模型路径 | `F:\hf_cache\model` |
-| `RAG_API_KEY` | 系统 RAG API 密钥（可选） | 空 |
-| `RAG_BASE_URL` | 系统 RAG API 地址（可选） | 空 |
-| `RAG_MODEL` | 系统 RAG API 模型名（可选） | 空 |
 | `RAG_RECALL_STRATEGY` | 召回策略：`vector` 或 `hybrid` | `vector` |
 | `RAG_ENABLE_RERANK` | 是否启用 Rerank | `false` |
 | `RAG_RERANK_MODEL_PATH` | Rerank 模型路径或 API 模型名 | 空 |
@@ -362,7 +354,7 @@ npm run dev
 - **RAG 设置**：本地/API 模式选择、API 嵌入配置、召回策略、Rerank 开关
 - **知识库保存**：时间戳、搜索结果、来源标题开关
 
-当前 AI 调用以用户设置页传入的配置为准；开启“系统模型”时，后端读取管理员后台保存的系统配置。RAG 本地模型路径以 `.env` 为准，不暴露给前端用户填写。
+当前 AI 调用以用户设置页传入的配置为准；开启“系统模型”时，后端读取管理员后台保存的系统配置。RAG 本地模型路径以 `.env` 为准，不暴露给前端用户填写；会员系统 RAG API 只能由管理员后台配置，不从 `.env` 读取。
 
 ---
 
