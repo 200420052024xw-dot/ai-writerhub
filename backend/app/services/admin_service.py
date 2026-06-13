@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 
+from app.core.config import get_settings
 from app.core.database import _ConnectionCtx, mysql_datetime
 from app.schemas.admin import AdminUserItem, SystemModelConfigResponse
 from app.services.auth_service import connect, current_user_id
@@ -144,6 +145,7 @@ def get_system_model_config() -> SystemModelConfigResponse:
 
         rows = conn.execute("SELECT setting_key, setting_value FROM system_settings").fetchall()
     data = {r["setting_key"]: r["setting_value"] for r in rows}
+    settings = get_settings()
     return SystemModelConfigResponse(
         provider=data.get("system_model_provider", ""),
         api_key="",  # 系统 key 不暴露给前端
@@ -153,10 +155,10 @@ def get_system_model_config() -> SystemModelConfigResponse:
         vision_use_main_config=data.get("system_model_vision_use_main_config", "1") != "0",
         vision_base_url=data.get("system_model_vision_base_url", ""),
         vision_model=data.get("system_model_vision_model", ""),
-        rag_embedding_source=data.get("system_rag_embedding_source", "local"),
+        rag_embedding_source=data.get("system_rag_embedding_source", settings.rag_embedding_source),
         rag_api_key="",  # 系统 key 不暴露给前端
-        rag_base_url=data.get("system_rag_base_url", ""),
-        rag_model=data.get("system_rag_model", ""),
-        rag_enable_rerank=data.get("system_rag_enable_rerank", "0") == "1",
-        rag_rerank_model_path=data.get("system_rag_rerank_model_path", ""),
+        rag_base_url=data.get("system_rag_base_url", settings.rag_base_url),
+        rag_model=data.get("system_rag_model", settings.rag_model),
+        rag_enable_rerank=data.get("system_rag_enable_rerank", "1" if settings.rag_enable_rerank else "0") == "1",
+        rag_rerank_model_path=data.get("system_rag_rerank_model_path", settings.rag_rerank_model_path),
     )

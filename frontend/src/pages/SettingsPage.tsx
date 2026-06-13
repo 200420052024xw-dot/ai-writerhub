@@ -160,7 +160,6 @@ export function SettingsPage({ user }: { user?: AuthUser }) {
       // 同步 RAG 设置
       setRagSettings((current) => ({
         ...current,
-        embeddingSource: (config.rag_embedding_source as "local" | "api") || "local",
         apiKey: config.rag_api_key,
         baseUrl: config.rag_base_url,
         model: config.rag_model,

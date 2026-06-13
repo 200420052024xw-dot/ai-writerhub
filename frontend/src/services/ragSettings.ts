@@ -84,7 +84,7 @@ export function saveRagSettings(settings: RagSettings) {
 export function toRagRuntimeConfig(settings: RagSettings, useSystemModel = false) {
   return {
     embedding_source: settings.embeddingSource,
-    local_model_path: DEFAULT_RAG_SETTINGS.localModelPath,
+    local_model_path: settings.localModelPath,
     api_key: settings.apiKey,
     base_url: settings.baseUrl,
     model: settings.model,

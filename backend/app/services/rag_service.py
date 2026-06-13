@@ -42,11 +42,13 @@ def provider_base_url(base_url: str) -> str:
 
 
 def runtime_rag_config(config: RagRuntimeConfig | None = None) -> RagRuntimeConfig:
+    settings = get_settings()
     if config:
         if config.use_system_model:
             return with_system_rag_credentials(config)
+        if config.embedding_source == "local":
+            return config.model_copy(update={"local_model_path": settings.rag_local_model_path})
         return config
-    settings = get_settings()
     return RagRuntimeConfig(
         embedding_source="api" if settings.rag_embedding_source == "api" else "local",
         local_model_path=settings.rag_local_model_path,
@@ -69,6 +71,17 @@ def _get_system_rag_setting(key: str) -> str:
     return row["setting_value"] if row else ""
 
 
+def _system_rag_settings() -> dict[str, str]:
+    settings = get_settings()
+    return {
+        "system_rag_local_model_path": settings.rag_local_model_path,
+        "system_rag_api_key": _get_system_rag_setting("system_rag_api_key") or settings.rag_api_key,
+        "system_rag_base_url": _get_system_rag_setting("system_rag_base_url") or settings.rag_base_url,
+        "system_rag_model": _get_system_rag_setting("system_rag_model") or settings.rag_model,
+        "system_rag_rerank_model_path": _get_system_rag_setting("system_rag_rerank_model_path") or settings.rag_rerank_model_path,
+    }
+
+
 def require_system_rag_member() -> None:
     from app.core.database import _ConnectionCtx
     with _ConnectionCtx() as conn:
@@ -82,15 +95,17 @@ def require_system_rag_member() -> None:
 
 def with_system_rag_credentials(config: RagRuntimeConfig) -> RagRuntimeConfig:
     """Fill member-only system RAG credentials without exposing keys to the frontend."""
-    if config.embedding_source != "api":
-        return config
     require_system_rag_member()
+    system_config = _system_rag_settings()
+    embedding_source = config.embedding_source
     return config.model_copy(
         update={
-            "api_key": config.api_key.strip() or _get_system_rag_setting("system_rag_api_key"),
-            "base_url": config.base_url.strip() or _get_system_rag_setting("system_rag_base_url"),
-            "model": config.model.strip() or _get_system_rag_setting("system_rag_model"),
-            "rerank_model_path": config.rerank_model_path.strip() or _get_system_rag_setting("system_rag_rerank_model_path"),
+            "embedding_source": "api" if embedding_source == "api" else "local",
+            "local_model_path": system_config["system_rag_local_model_path"] or config.local_model_path.strip(),
+            "api_key": system_config["system_rag_api_key"] or config.api_key.strip(),
+            "base_url": system_config["system_rag_base_url"] or config.base_url.strip(),
+            "model": system_config["system_rag_model"] or config.model.strip(),
+            "rerank_model_path": system_config["system_rag_rerank_model_path"] or config.rerank_model_path.strip(),
         }
     )
 
