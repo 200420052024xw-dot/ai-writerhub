@@ -1,4 +1,8 @@
+import json
+from typing import AsyncIterator
+
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
 from app.schemas.translation import (
     ExtractTermsRequest,
@@ -14,7 +18,13 @@ from app.schemas.translation import (
 from app.services.translation_service import extract_terms
 from app.services.llm_client import RuntimeModelConfig
 from app.services.translation_state_service import list_translation_versions
-from app.services.translation_job_service import create_translation_job, get_translation_job, list_translation_jobs
+from app.services.translation_job_service import (
+    create_translation_job,
+    get_translation_job,
+    list_translation_jobs,
+    subscribe_job,
+    unsubscribe_job,
+)
 from app.services.document_service import get_document
 from app.services.translation_service import build_paragraph_units, build_sentence_units
 
@@ -89,3 +99,34 @@ async def translation_preview(
             for unit in units
         ],
     )
+
+
+@router.get("/documents/{document_id}/translation-jobs/{job_id}/stream")
+async def stream_translation_job(document_id: str, job_id: str) -> StreamingResponse:
+    job = get_translation_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="translation job not found")
+
+    async def event_stream() -> AsyncIterator[str]:
+        queue = subscribe_job(job_id)
+        try:
+            # 如果任务已结束，直接推送终态
+            if job.status == "completed":
+                yield f"data: {json.dumps({'type': 'completed'}, ensure_ascii=False)}\n\n"
+                return
+            if job.status == "failed":
+                yield f"data: {json.dumps({'type': 'failed', 'error': job.error or '未知错误'}, ensure_ascii=False)}\n\n"
+                return
+            if job.status == "interrupted":
+                yield f"data: {json.dumps({'type': 'failed', 'error': job.error or '任务被中断'}, ensure_ascii=False)}\n\n"
+                return
+
+            while True:
+                event = await queue.get()
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event.get("type") in ("completed", "failed"):
+                    break
+        finally:
+            unsubscribe_job(job_id, queue)
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

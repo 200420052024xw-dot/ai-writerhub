@@ -8,6 +8,7 @@ import {
   getTranslationWorkspace,
   saveStoredDocument,
   saveStoredDocumentParagraphs,
+  streamTranslationJob,
   type ExtractTermsResponse,
   type GlossaryEntry,
   type StoredDocumentParagraph,
@@ -293,6 +294,12 @@ export function TranslatePage({
   const loadingSourceRef = useRef(false);
   const documentParagraphsRef = useRef<StoredDocumentParagraph[]>(sourceDocument?.paragraphs || []);
   const latestSavePromiseRef = useRef<Promise<void> | null>(null);
+  const sseCleanupRef = useRef<(() => void) | null>(null);
+
+  // 组件卸载时关闭 SSE 连接
+  useEffect(() => () => {
+    if (sseCleanupRef.current) sseCleanupRef.current();
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -396,20 +403,16 @@ export function TranslatePage({
   useEffect(() => {
     if (!sourceDocument?.id) return;
     let cancelled = false;
-    const refreshWorkspace = async () => {
-      try {
-        const workspace = await getTranslationWorkspace(sourceDocument.id!);
+    // 初始加载一次 workspace（历史版本和任务状态）
+    getTranslationWorkspace(sourceDocument.id)
+      .then((workspace) => {
         if (cancelled) return;
         setVersions(workspace.versions);
         setJobs(workspace.jobs);
-      } catch {
-        // Keep the last successful workspace visible.
-      }
-    };
-    const timer = window.setInterval(refreshWorkspace, 1500);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
     };
   }, [sourceDocument?.id]);
 
@@ -541,6 +544,12 @@ export function TranslatePage({
         return;
       }
 
+      // 关闭上一次 SSE 连接
+      if (sseCleanupRef.current) {
+        sseCleanupRef.current();
+        sseCleanupRef.current = null;
+      }
+
       const job = await createTranslationJob(sourceDocument.id, {
         direction,
         granularity,
@@ -549,6 +558,100 @@ export function TranslatePage({
         ai_config: aiConfig,
       });
       setJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+
+      // 如果 job 已经是终态（重复提交返回已有 job），直接刷新
+      if (job.status === "completed" || job.status === "failed") {
+        const workspace = await getTranslationWorkspace(sourceDocument.id);
+        setVersions(workspace.versions);
+        setJobs(workspace.jobs);
+        return;
+      }
+
+      // 打开 SSE 连接接收实时进度
+      const documentId = sourceDocument.id;
+      const jobId = job.id;
+      let aborted = false;
+      const abortController = new AbortController();
+
+      sseCleanupRef.current = () => {
+        aborted = true;
+        abortController.abort();
+        sseCleanupRef.current = null;
+      };
+
+      streamTranslationJob(documentId, jobId, (event) => {
+        if (aborted) return;
+        if (event.type === "progress") {
+          // 更新 job 进度
+          setJobs((current) =>
+            current.map((item) =>
+              item.id === jobId
+                ? { ...item, completed_chunks: event.completed, total_chunks: event.total, status: "running" as const }
+                : item,
+            ),
+          );
+          // 更新版本中的翻译结果（实时渲染）
+          setVersions((current) => {
+            const existing = current.find((v) => v.direction === direction && v.granularity === granularity);
+            const updatedVersion: TranslationVersion = {
+              document_id: documentId,
+              direction,
+              granularity,
+              source_text: existing?.source_text ?? "",
+              source_hash: existing?.source_hash ?? "",
+              current_source_hash: existing?.current_source_hash ?? "",
+              is_stale: existing?.is_stale ?? false,
+              target_text: event.paragraph_pairs.map((p) => p.target).filter(Boolean).join("\n\n"),
+              context_summary: existing?.context_summary ?? "",
+              used_context_summary: existing?.used_context_summary ?? false,
+              chunks: existing?.chunks ?? [],
+              paragraph_pairs: event.paragraph_pairs,
+              sentence_pairs: event.sentence_pairs,
+              options,
+              updated_at: new Date().toISOString(),
+            };
+            const others = current.filter((v) => !(v.direction === direction && v.granularity === granularity));
+            return [updatedVersion, ...others];
+          });
+        } else if (event.type === "completed") {
+          // 翻译完成，刷新一次获取完整数据
+          setJobs((current) =>
+            current.map((item) =>
+              item.id === jobId
+                ? { ...item, status: "completed" as const, completed_chunks: item.total_chunks }
+                : item,
+            ),
+          );
+          void getTranslationWorkspace(documentId).then((workspace) => {
+            if (!aborted) {
+              setVersions(workspace.versions);
+              setJobs(workspace.jobs);
+            }
+          });
+        } else if (event.type === "failed") {
+          setJobs((current) =>
+            current.map((item) =>
+              item.id === jobId
+                ? { ...item, status: "failed" as const, error: event.error }
+                : item,
+            ),
+          );
+          setMessage(`翻译失败：${event.error}`);
+          window.setTimeout(() => setMessage(""), 5000);
+        }
+      }, abortController.signal).catch(() => {
+        if (!aborted) {
+          // SSE 连接断开，回退到刷新 workspace
+          void getTranslationWorkspace(documentId).then((workspace) => {
+            setVersions(workspace.versions);
+            setJobs(workspace.jobs);
+          });
+        }
+      }).finally(() => {
+        if (!aborted) {
+          sseCleanupRef.current = null;
+        }
+      });
     } catch {
       setMessage("翻译失败，请检查后端服务或模型配置");
       window.setTimeout(() => setMessage(""), 2200);

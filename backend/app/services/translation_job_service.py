@@ -35,6 +35,31 @@ ACTIVE_TASKS: dict[str, asyncio.Task] = {}
 MAX_CONCURRENCY = 3
 MAX_ATTEMPTS = 3
 
+# ── SSE 事件队列 ──
+EVENT_QUEUES: dict[str, list[asyncio.Queue]] = {}
+
+
+def subscribe_job(job_id: str) -> asyncio.Queue:
+    queue: asyncio.Queue = asyncio.Queue()
+    EVENT_QUEUES.setdefault(job_id, []).append(queue)
+    return queue
+
+
+def unsubscribe_job(job_id: str, queue: asyncio.Queue) -> None:
+    queues = EVENT_QUEUES.get(job_id)
+    if queues:
+        try:
+            queues.remove(queue)
+        except ValueError:
+            pass
+        if not queues:
+            EVENT_QUEUES.pop(job_id, None)
+
+
+def _emit_event(job_id: str, event: dict) -> None:
+    for queue in EVENT_QUEUES.get(job_id, []):
+        queue.put_nowait(event)
+
 
 def _now() -> str:
     return mysql_datetime()
@@ -259,6 +284,15 @@ async def _run_translation_job(
                     options=payload.options,
                 )
                 _set_job(job_id, completed_chunks=completed_count)
+
+                # SSE: 推送进度事件
+                _emit_event(job_id, {
+                    "type": "progress",
+                    "completed": completed_count,
+                    "total": len(unit_chunks),
+                    "paragraph_pairs": [p.model_dump() for p in paragraph_pairs],
+                    "sentence_pairs": [p.model_dump() for p in sentence_pairs],
+                })
             return index, unit_chunk, translated
 
         translated_parts = await asyncio.gather(
@@ -297,8 +331,11 @@ async def _run_translation_job(
             error="",
             completed=True,
         )
+        _emit_event(job_id, {"type": "completed"})
     except Exception as exc:
-        _set_job(job_id, status="failed", error=str(exc), completed=True)
+        error_msg = str(exc)
+        _set_job(job_id, status="failed", error=error_msg, completed=True)
+        _emit_event(job_id, {"type": "failed", "error": error_msg})
     finally:
         ACTIVE_TASKS.pop(job_id, None)
 

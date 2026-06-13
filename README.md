@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🖊️ 文枢 AI WriterHub
+# 🖊️ 文枢AI-WriterHub
 
-**AI 驱动的一站式文档创作、翻译、排版与知识库问答平台**
+**AI 驱动的一站式智能办公与知识管理文档处理平台**
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
 ![React](https://img.shields.io/badge/React-61DAFB?style=flat&logo=react&logoColor=black)
@@ -20,9 +20,7 @@
 
 ## 📖 项目简介
 
-**文枢 AI WriterHub** 是一个基于大语言模型（LLM）的全栈文档工作平台，集成了 **富文本编辑**、**AI 写作助手**、**智能翻译**、**文档排版** 和 **知识库 RAG 问答** 等核心能力。支持接入 DeepSeek、OpenAI、通义千问、智谱、火山引擎、小米 MiMo、MiniMax 等多种 AI 模型服务商。
-
-> 💡 适合需要 AI 辅助写作、多语言翻译、文档管理和知识检索的个人用户或小型团队。
+**文枢AI-WriterHub** 是一款面向智能办公与知识管理场景的 AI 文档处理平台，融合大模型辅助、多格式文档解析、智能翻译、自动化排版与 RAG 知识库问答能力，打通从资料导入、文档处理、语言转换、格式规范到知识检索的完整工作流，帮助用户以更低成本完成更高效率、更高标准的文档管理、信息整理、翻译排版和知识检索。支持接入 DeepSeek、OpenAI、通义千问、智谱、火山引擎、小米 MiMo、MiniMax 等多种 AI 模型服务商。
 
 ---
 
@@ -48,10 +46,10 @@
 - 复制为 Markdown / 纯文本
 - 编辑内容自动保存到后端
 
-### 🤖 AI 写作助手
+### 🤖 AI 文档助手
 - 编辑器右侧边栏集成 AI 对话面板
 - 流式输出（Streaming），实时显示生成内容
-- 支持基于上下文的续写、改写、扩写
+- 支持基于上下文的内容改写、结构整理、摘要提炼和表达优化
 - 对话历史持久化存储
 
 ### 🌐 智能翻译
@@ -162,7 +160,7 @@ writerhub-ai/
 │       │   └── schema.sql            # 数据库建表脚本（10 张表）
 │       ├── routers/                  # API 路由层（10 个路由）
 │       │   ├── auth.py               # 认证相关接口
-│       │   ├── assistant.py          # AI 写作助手接口
+│       │   ├── assistant.py          # AI 文档助手接口
 │       │   ├── chat_history.py       # 对话历史接口
 │       │   ├── config.py             # 运行时配置接口
 │       │   ├── documents.py          # 文档 CRUD 接口
@@ -185,7 +183,7 @@ writerhub-ai/
 │       │   ├── markdown_service.py   # Markdown 检测
 │       │   └── chat_history_service.py# 对话历史
 │       ├── prompts/                  # LLM 系统提示词
-│       │   ├── assistant.py          # 写作助手提示词
+│       │   ├── assistant.py          # 文档助手提示词
 │       │   ├── documents.py          # OCR 识别提示词
 │       │   ├── format.py             # 排版解析提示词
 │       │   └── translation.py        # 翻译提示词
@@ -475,7 +473,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | 方法 | 路径 | 说明 | 认证 |
 |------|------|------|------|
-| POST | `/api/assistant/chat` | AI 写作助手对话（流式） | ✅ |
+| POST | `/api/assistant/chat` | AI 文档助手对话（流式） | ✅ |
 
 ### 翻译接口
 

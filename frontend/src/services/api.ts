@@ -286,6 +286,40 @@ export async function createTranslationJob(
   return response.json();
 }
 
+export type TranslationStreamEvent =
+  | { type: "progress"; completed: number; total: number; paragraph_pairs: TranslationPair[]; sentence_pairs: TranslationPair[] }
+  | { type: "completed" }
+  | { type: "failed"; error: string };
+
+export async function streamTranslationJob(
+  documentId: string,
+  jobId: string,
+  onEvent: (event: TranslationStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/documents/${documentId}/translation-jobs/${jobId}/stream`, { signal });
+  if (!response.ok || !response.body) {
+    throw new Error(await response.text() || "Translation stream failed");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+    for (const part of parts) {
+      const line = part.split("\n").find((item) => item.startsWith("data:"));
+      if (!line) continue;
+      const data = line.slice(5).trim();
+      if (!data) continue;
+      onEvent(JSON.parse(data) as TranslationStreamEvent);
+    }
+  }
+}
+
 export async function getTranslationPreview(
   documentId: string,
   granularity: TranslationGranularity,

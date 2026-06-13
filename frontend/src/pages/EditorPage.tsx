@@ -743,6 +743,21 @@ function htmlToMarkdown(html: string): string {
   return nodeToMarkdown(container);
 }
 
+function htmlToPlainText(html: string): string {
+  const container = document.createElement("div");
+  container.innerHTML = html;
+  return normalizePlainText(nodeToPlainText(container));
+}
+
+function normalizePlainText(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function isEditorBodyEmpty(editor: Editor) {
   const doc = editor.state.doc;
   if (doc.childCount !== 1) return false;
@@ -835,6 +850,20 @@ function inlineToMarkdown(node: ChildNode): string {
   return inner;
 }
 
+function inlineToPlainText(node: ChildNode): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent || "";
+  }
+  if (!(node instanceof HTMLElement)) return "";
+
+  const tag = node.tagName.toLowerCase();
+  if (node.getAttribute("data-type") === "inline-math" || node.hasAttribute("data-latex")) {
+    return node.getAttribute("data-latex") || node.textContent || "";
+  }
+  if (tag === "br") return "\n";
+  return Array.from(node.childNodes).map(inlineToPlainText).join("");
+}
+
 function escapeMarkdownTableCell(value: string) {
   return value.replace(/\|/g, "\\|").replace(/\n+/g, " ").trim();
 }
@@ -854,6 +883,71 @@ function tableToMarkdown(table: HTMLElement) {
     `| ${Array.from({ length: columnCount }, () => "---").join(" | ")} |`,
     ...bodyRows.map((row) => `| ${row.join(" | ")} |`),
   ].join("\n");
+}
+
+function tableToPlainText(table: HTMLElement) {
+  return Array.from(table.querySelectorAll("tr"))
+    .map((row) =>
+      Array.from(row.children)
+        .filter((cell) => ["td", "th"].includes(cell.tagName.toLowerCase()))
+        .map((cell) => normalizePlainText(Array.from(cell.childNodes).map(inlineToPlainText).join("")))
+        .join("\t"),
+    )
+    .filter((row) => row.trim())
+    .join("\n");
+}
+
+function nodeToPlainText(node: ChildNode): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return node.textContent || "";
+  }
+  if (!(node instanceof HTMLElement)) return "";
+
+  const tag = node.tagName.toLowerCase();
+  const inline = () => normalizePlainText(Array.from(node.childNodes).map(inlineToPlainText).join(""));
+
+  if (tag === "div" && node.getAttribute("data-type") === "block-math") {
+    return normalizePlainText(node.getAttribute("data-latex") || node.textContent || "");
+  }
+  if (tag === "span" && node.getAttribute("data-type") === "inline-math") {
+    return normalizePlainText(node.getAttribute("data-latex") || node.textContent || "");
+  }
+  if (tag === "table") return tableToPlainText(node);
+  if (/^h[1-6]$/.test(tag) || tag === "p" || tag === "blockquote") return inline();
+  if (tag === "pre") return normalizePlainText(node.querySelector("code")?.textContent || node.textContent || "");
+  if (tag === "hr") return "";
+  if (tag === "ul") {
+    return Array.from(node.children)
+      .filter((child) => child.tagName.toLowerCase() === "li")
+      .map((li) => `- ${normalizePlainText(Array.from(li.childNodes).map(inlineToPlainText).join(""))}`)
+      .filter((item) => item.trim() !== "-")
+      .join("\n");
+  }
+  if (tag === "ol") {
+    return Array.from(node.children)
+      .filter((child) => child.tagName.toLowerCase() === "li")
+      .map((li, index) => `${index + 1}. ${normalizePlainText(Array.from(li.childNodes).map(inlineToPlainText).join(""))}`)
+      .filter((item) => !/^\d+\.\s*$/.test(item))
+      .join("\n");
+  }
+  if (tag === "div" && node.classList.contains("callout-block")) {
+    const contentNode = node.querySelector(".callout-content");
+    return Array.from((contentNode || node).childNodes).map(nodeToPlainText).filter(Boolean).join("\n");
+  }
+  if (tag === "details" || (tag === "div" && node.getAttribute("data-type") === "toggle")) {
+    const summary = node.querySelector("summary, .toggle-summary")?.textContent || "";
+    const bodyNode = node.querySelector(".toggle-content");
+    const body = Array.from((bodyNode || node).childNodes)
+      .filter((child) => !(child instanceof HTMLElement && ["summary", "toggle-summary"].some((name) => child.matches(name === "summary" ? name : `.${name}`))))
+      .map(nodeToPlainText)
+      .filter(Boolean)
+      .join("\n");
+    return [summary, body].map(normalizePlainText).filter(Boolean).join("\n");
+  }
+  if (tag === "div" || tag === "section") {
+    return Array.from(node.childNodes).map(nodeToPlainText).filter(Boolean).join("\n");
+  }
+  return inline();
 }
 
 function nodeToMarkdown(node: ChildNode): string {
@@ -1294,7 +1388,7 @@ export function EditorPage({
         const title = documentTitle.trim();
         text = title ? `# ${title}${body ? `\n\n${body}` : ""}` : body;
       } else {
-        const body = editor.getText();
+        const body = htmlToPlainText(editor.getHTML());
         const title = documentTitle.trim();
         text = title ? `${title}${body ? `\n\n${body}` : ""}` : body;
       }
